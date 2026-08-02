@@ -1,0 +1,152 @@
+---
+title: "Student Performance Factors — EDA & Failure Modeling"
+author: "Wolf & Avery"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 5)
+
+library(tidyverse)
+library(GGally)
+library(gt)
+library(scales)
+library(patchwork)
+library(broom)
+
+source("R/load.R")
+source("R/preprocess.R")
+source("R/missingness.R")
+source("R/eda_plots.R")
+source("R/tables.R")
+source("R/model.R")
+
+ggplot2::theme_set(report_theme())
+```
+
+# 1. Load & Inspect
+
+```{r load}
+raw <- load_("StudentPerformanceFactors.csv")
+```
+
+# 2. Missingness
+
+```{r missing}
+miss <- count_missing_values(raw)
+tabulate_missing_values(miss)
+```
+
+# 3. Imputation
+
+Target (`Exam_Score`) is complete, so no rows are dropped. The three affected
+categoricals are mode-imputed.
+
+```{r impute}
+
+df <- impute_categoricals(raw, miss$variable)
+```
+
+# 4. Pass/Fail Target (cutoff = 61) + Factor Setup
+
+Ordinal predictors get explicit level ordering (Low → High) so effects read
+monotonically; the rest become plain factors.
+
+```{r target}
+df <- add_target_and_factors(df)
+table_class_balance(df)
+```
+
+```{r target-plot}
+plot_target_balance(df)
+```
+
+# 5. Univariate Distributions
+
+```{r dist-num}
+num_vars <- c("Hours_Studied","Attendance","Sleep_Hours","Previous_Scores",
+              "Tutoring_Sessions","Physical_Activity")
+plot_num_distributions(df, num_vars)
+```
+
+# 6. Associations with Failing
+
+## 6a. Numeric predictors vs. Status
+
+```{r box-num}
+plot_num_by_status(df, num_vars)
+```
+
+```{r ttests}
+smd <- ttest_summary(df, num_vars)
+table_ttest(smd)
+```
+
+## 6b. Categorical predictors vs. Status
+
+```{r cat-assoc}
+cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
+
+fail_rates <- fail_rate_summary(df, cat_vars)
+table_fail_rates(fail_rates)
+```
+
+```{r cat-plot, fig.height=9}
+plot_fail_rates_cat(df, cat_vars)
+```
+
+```{r chisq}
+chi_res <- chisq_summary(df, cat_vars)
+table_chisq(chi_res)
+```
+
+# 7. Correlation Structure
+
+```{r corr, fig.height=7}
+plot_correlation(df, num_vars)
+```
+
+# 8. Logistic Regression
+
+Model **P(Fail)**; positive coefficients raise failure risk. `Exam_Score` is
+excluded (it defines the target). Ordinal factors use polynomial contrasts, so
+`.L` (linear) terms capture the Low→High trend.
+
+```{r glm-fit}
+fit <- fit_logistic(df, num_vars, cat_vars)
+summary(fit)
+```
+
+## 8a. Coefficients Table
+
+```{r coef-table}
+table_coef(fit)
+```
+
+## 8b. Log-Odds Forest Plot
+
+```{r logodds-plot, fig.height=7}
+plot_logodds(fit)
+```
+
+```{r fit-quality}
+table_fit_quality(fit)
+```
+
+# 9. Takeaways
+
+```{r takeaways, echo=FALSE, results='asis'}
+top_num <- smd$variable[1]
+top_cat <- chi_res$variable[1]
+cat(sprintf(
+"- Class balance: %.1f%% fail (failing is the majority class here).\n- Strongest numeric signal: **%s**.\n- Strongest categorical signal: **%s**.\n- One impossible score (101) was capped at 100.\n- Missingness was light (three categoricals, ~1%%) and mode-imputed.\n- `Exam_Score` must stay out of any predictive model.\n- Because attendance and study hours dominate, an intervention model should probably weight those over the socioeconomic factors.\n",
+100 * mean(df$Status == "Fail"), top_num, top_cat))
+```

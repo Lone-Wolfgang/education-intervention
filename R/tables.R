@@ -1,0 +1,108 @@
+# gt table of Pass/Fail counts and shares.
+table_class_balance <- function(df) {
+  df %>%
+    dplyr::count(Status) %>%
+    dplyr::mutate(pct = n / sum(n)) %>%
+    gt::gt() %>%
+    gt::fmt_percent(pct, decimals = 1) %>%
+    gt::tab_header(title = "Class Balance (cutoff = 61)")
+}
+
+# Welch t-test of each numeric predictor between Fail and Pass groups;
+# returns group means, their difference, and the p-value, sorted by p.
+ttest_summary <- function(df, num_vars) {
+  purrr::map_dfr(num_vars, function(v) {
+    f  <- df %>% dplyr::filter(Status == "Fail") %>% dplyr::pull(v)
+    p  <- df %>% dplyr::filter(Status == "Pass") %>% dplyr::pull(v)
+    tt <- t.test(f, p)
+    tibble::tibble(variable  = v,
+                   mean_fail = mean(f),
+                   mean_pass = mean(p),
+                   diff      = mean(f) - mean(p),
+                   p_value   = tt$p.value)
+  }) %>% dplyr::arrange(p_value)
+}
+
+# Render the t-test summary as a formatted gt table.
+table_ttest <- function(smd) {
+  smd %>%
+    gt::gt() %>%
+    gt::fmt_number(c(mean_fail, mean_pass, diff), decimals = 2) %>%
+    gt::fmt_scientific(p_value, decimals = 2) %>%
+    gt::tab_header(title = "Numeric predictors vs. Failing (Welch t-test)")
+}
+
+# Long table of n and fail rate for every level of every categorical predictor.
+fail_rate_summary <- function(df, cat_vars) {
+  purrr::map_dfr(cat_vars, function(v) {
+    df %>%
+      dplyr::group_by(level = as.character(.data[[v]])) %>%
+      dplyr::summarise(n = dplyr::n(),
+                       fail_rate = mean(Status == "Fail"),
+                       .groups = "drop") %>%
+      dplyr::mutate(variable = v)
+  })
+}
+
+# Render fail rates as a gt table grouped by variable.
+table_fail_rates <- function(fail_rates) {
+  fail_rates %>%
+    dplyr::select(variable, level, n, fail_rate) %>%
+    gt::gt(groupname_col = "variable") %>%
+    gt::fmt_percent(fail_rate, decimals = 1) %>%
+    gt::tab_header(title = "Fail rate by category level")
+}
+
+# Chi-square test of independence between each categorical predictor and
+# Status; returns statistic, df, and p-value sorted by p.
+chisq_summary <- function(df, cat_vars) {
+  purrr::map_dfr(cat_vars, function(v) {
+    ct <- suppressWarnings(chisq.test(table(df[[v]], df$Status)))
+    tibble::tibble(variable  = v,
+                   statistic = ct$statistic,
+                   df        = ct$parameter,
+                   p_value   = ct$p.value)
+  }) %>% dplyr::arrange(p_value)
+}
+
+# Render the chi-square results as a formatted gt table.
+table_chisq <- function(chi_res) {
+  chi_res %>%
+    gt::gt() %>%
+    gt::fmt_number(statistic, decimals = 2) %>%
+    gt::fmt_scientific(p_value, decimals = 2) %>%
+    gt::tab_header(title = "Categorical predictors vs. Failing (Chi-square)")
+}
+
+# gt table of model coefficients with odds ratios and CIs,
+# highlighting p-values below 0.05.
+table_coef <- function(fit) {
+  broom::tidy(fit, conf.int = TRUE) %>%
+    dplyr::mutate(odds_ratio = exp(estimate),
+                  or_low     = exp(conf.low),
+                  or_high    = exp(conf.high)) %>%
+    dplyr::select(term, estimate, std.error, statistic, p.value,
+                  odds_ratio, or_low, or_high) %>%
+    gt::gt() %>%
+    gt::fmt_number(c(estimate, std.error, statistic,
+                     odds_ratio, or_low, or_high), decimals = 3) %>%
+    gt::fmt_scientific(p.value, decimals = 2) %>%
+    gt::cols_label(estimate = "log-odds", std.error = "SE", statistic = "z",
+                   p.value  = "p", odds_ratio = "OR",
+                   or_low   = "OR 2.5%", or_high = "OR 97.5%") %>%
+    gt::tab_header(title    = "Logistic Regression Coefficients",
+                   subtitle = "Outcome = Fail") %>%
+    gt::data_color(columns = p.value,
+                   fn = scales::col_bin(c("firebrick", "white"), bins = c(0, 0.05, 1)))
+}
+
+# gt table of overall model fit: deviances, AIC, and McFadden pseudo-R^2.
+table_fit_quality <- function(fit) {
+  tibble::tibble(null_deviance  = fit$null.deviance,
+                 resid_deviance = fit$deviance,
+                 AIC            = fit$aic,
+                 pseudo_R2      = 1 - fit$deviance / fit$null.deviance) %>%
+    gt::gt() %>%
+    gt::fmt_number(dplyr::everything(), decimals = 2) %>%
+    gt::tab_header(title = "Model fit (McFadden pseudo-R\u00b2)")
+}
