@@ -55,7 +55,7 @@ categoricals are mode-imputed.
 df <- impute_categoricals(raw, miss$variable)
 ```
 
-# 4. Pass/Fail Target (cutoff = 61) + Factor Setup
+# 4. Pass/Fail Target (cutoff = 60) + Factor Setup
 
 Ordinal predictors get explicit level ordering (Low → High) so effects read
 monotonically; the rest become plain factors.
@@ -147,6 +147,6 @@ table_fit_quality(fit)
 top_num <- smd$variable[1]
 top_cat <- chi_res$variable[1]
 cat(sprintf(
-"- Class balance: %.1f%% fail (failing is the majority class here).\n- Strongest numeric signal: **%s**.\n- Strongest categorical signal: **%s**.\n- One impossible score (101) was capped at 100.\n- Missingness was light (three categoricals, ~1%%) and mode-imputed.\n- `Exam_Score` must stay out of any predictive model.\n- Because attendance and study hours dominate, an intervention model should probably weight those over the socioeconomic factors.\n",
+"- Class balance: %.1f%% fail (failing is the majority class here).\n- Strongest numeric signal: **%s**.\n- Strongest categorical signal: **%s**.\n- Missingness was light (three categoricals, ~1%%) and mode-imputed.\n- `Exam_Score` must stay out of any predictive model.\n- Because attendance and study hours dominate, an intervention model should probably weight those over the socioeconomic factors.\n",
 100 * mean(df$Status == "Fail"), top_num, top_cat))
 ```
