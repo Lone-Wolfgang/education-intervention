@@ -30,7 +30,7 @@ jobs:
         run: |
           install.packages(c(
             "tidyverse", "GGally", "gt", "scales",
-            "patchwork", "broom", "rmarkdown", "knitr"
+            "patchwork", "broom", "rmarkdown", "knitr", "ggthemes"
           ))
         shell: Rscript {0}
 
