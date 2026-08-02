@@ -67,9 +67,13 @@ plot_fail_rates_cat <- function(df, cat_vars) {
       dplyr::group_by(lvl = as.character(.data[[v]])) %>%
       dplyr::summarise(fail_rate = mean(Status == "Fail"), .groups = "drop")
   })
-  rate_min <- min(all_rates$fail_rate)
-  rate_max <- max(all_rates$fail_rate)
-  rate_mid <- (rate_min + rate_max) / 2
+  # Center the diverging scale on the overall fail rate so color encodes
+  # deviation from the baseline risk, with symmetric limits so equal
+  # deviations above/below the baseline get equal color intensity.
+  rate_mid <- mean(df$Status == "Fail")
+  max_dev  <- max(abs(all_rates$fail_rate - rate_mid))
+  rate_min <- rate_mid - max_dev
+  rate_max <- rate_mid + max_dev
 
   plots <- purrr::map(cat_vars, function(v) {
     df %>%
