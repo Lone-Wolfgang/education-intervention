@@ -1,0 +1,388 @@
+---
+title: "Project 2 Applied Stats"
+author: "Avery John"
+date: "2026-07-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Users/averyjohn/Documents/Project2Stats", error = TRUE)
+```
+
+### Project Description / Notes
+At least 5 Models need to be built for this project\
+1) Additive Logistic Regression Model (Obj 1)\
+2) Complex Logistic Regression Model (interactions or polynomials)\
+3) LDA Model\
+4) QDA Model\
+5) Non-parametric Model (KNN, Decision Tree, Random Forest, etc.)\
+\
+Objective 1 Goals: Perform EDA, Build logistic regression model (additive is preferable) for interpretative purposes using training data\
+Objective 2 Goals: Use simple logistic regression model as the baseline to build additional and more complex models to improve on prediction performance metrics\
+\
+OVERALL GOAL: Choose the model with the best predictive performance\
+- AIC, ROC curves, LogLoss\
+
+### Load Data
+```{r}
+student <- read.csv("StudentPerformanceFactors.csv", header = TRUE)
+head(student)
+```
+
+### Load Libraries
+```{r}
+library(naniar)
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+library(dplyr)
+```
+
+### Step 1 - Sanity Check (Assess the data)
+```{r}
+nrow(student)
+str(student)
+colSums(is.na(student))
+```
+
+```{r}
+# I didn't notice any NA values until I looked at the levels for Distance_From_Home
+table(student$Distance_from_Home)
+
+# 67 values don't have a label, effectively making them NA values
+# Perform a sanity check on other variables to check for the same issue
+table(student$Parental_Involvement) #Good
+table(student$Access_to_Resources) #Good
+table(student$Extracurricular_Activities) #Good
+table(student$Motivation_Level) #Good
+table(student$Internet_Access) #Good
+table(student$Family_Income) #Good
+table(student$Teacher_Quality) # "" Column (78)
+table(student$School_Type) #Good
+table(student$Peer_Influence) #Good
+table(student$Learning_Disabilities) #Good
+table(student$Parental_Education_Level) # "" Column (90)
+table(student$Gender) #Good
+table(student$Physical_Activity)
+
+# Drop NAs ("" values)
+student_clean <- student %>%
+  mutate(across(c(Teacher_Quality, Parental_Education_Level, Distance_from_Home), ~ na_if(., ""))) %>%
+  drop_na(Teacher_Quality, Parental_Education_Level, Distance_from_Home)
+
+nrow(student_clean)  # Dropped 229 rows, even though there are 235 rows with "" (67+78+90)
+
+```
+
+### Step 2: Convert categorical variables into factors
+```{r}
+student_clean <- student_clean %>%
+  mutate(
+    # Ordinal (Low < Medium < High, etc.)
+    Parental_Involvement = factor(Parental_Involvement, levels = c("Low","Medium","High"), ordered = TRUE),
+    Motivation_Level = factor(Motivation_Level, levels = c("Low","Medium","High"), ordered = TRUE),
+    Access_to_Resources = factor(Access_to_Resources, levels = c("Low","Medium","High"), ordered = TRUE),
+    Family_Income = factor(Family_Income, levels = c("Low","Medium","High"), ordered = TRUE),
+    Teacher_Quality = factor(Teacher_Quality, levels = c("Low","Medium","High"), ordered = TRUE),
+    Parental_Education_Level = factor(Parental_Education_Level, levels = c("High School","College","Postgraduate"), ordered = TRUE),
+
+    # Nominal (no inherent order)
+    Extracurricular_Activities  = factor(Extracurricular_Activities),
+    Internet_Access = factor(Internet_Access),
+    School_Type = factor(School_Type),
+    Peer_Influence = factor(Peer_Influence),
+    Learning_Disabilities = factor(Learning_Disabilities),
+    Distance_from_Home = factor(Distance_from_Home),
+    Gender = factor(Gender)
+  )
+
+str(student_clean)
+```
+
+### Step 3: Create binary response variable
+```{r}
+student_clean <- student_clean %>%
+  mutate(Pass = factor(if_else(Exam_Score >= 67, "Pass", "Fail"), levels = c("Fail","Pass")))
+
+table(student_clean$Pass)
+prop.table(table(student_clean$Pass))
+
+# 67 was chosen as the grade threshold, because if I used a higher threshold, more students would fail rather than pass
+# Example:
+#student_clean <- student_clean %>%
+  #mutate(Pass = factor(if_else(Exam_Score >= 70, "Pass", "Fail"), levels = c("Fail","Pass")))
+
+#table(student_clean$Pass)
+#prop.table(table(student_clean$Pass)) 
+    #75% fail while 25% pass
+
+str(student_clean)
+```
+
+### Quick Outlier Check
+```{r}
+summary(student_clean$Exam_Score) #55 is the lowest score, while 101 is the highest (either data entry error or bonus points added)
+
+boxplot(student_clean$Exam_Score, main = "Exam Score Distribution")
+student_clean %>% filter(Exam_Score > 95)
+# Dropping the 101 grade to stay on the average 100 point scale
+student_clean <- student_clean %>%
+  filter(Exam_Score <= 100)
+
+nrow(student_clean)  # Now 6377 observations
+summary(student_clean$Exam_Score) # Max is now 100.00
+```
+
+### Step 4: Univariate EDA
+```{r}
+# Numeric Variables
+num_vars <- c("Hours_Studied", "Attendance", "Sleep_Hours", 
+              "Previous_Scores", "Tutoring_Sessions",
+              "Physical_Activity","Exam_Score")
+
+student_clean %>%
+  select(all_of(num_vars)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Distribution of Numeric Variables")
+
+student_clean %>%
+  select(all_of(num_vars)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = variable, y = value)) +
+  geom_boxplot(fill = "lightblue") +
+  facet_wrap(~ variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Boxplots of Numeric Variables")
+```
+
+```{r}
+# Categorical Variables
+cat_vars <- c("Parental_Involvement", "Access_to_Resources",
+              "Extracurricular_Activities", "Motivation_Level", 
+              "Internet_Access", "Family_Income", "Teacher_Quality",
+              "School_Type", "Peer_Influence", "Learning_Disabilities", 
+              "Parental_Education_Level", "Distance_from_Home", "Gender")
+
+student_clean %>%
+  select(all_of(cat_vars)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value",
+               values_transform = as.character) %>%
+  ggplot(aes(x = value)) +
+  geom_bar(fill = "coral") +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Distribution of Categorical Variables")
+```
+
+```{r}
+# Response Variable (Pass)
+student_clean %>%
+  ggplot(aes(x = Pass, fill = Pass)) +
+  geom_bar() +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5) +
+  theme_minimal() +
+  labs(title = "Distribution of Pass/Fail", y = "Count") +
+  theme(legend.position = "none")
+```
+
+### Step 5: Bivariate EDA
+```{r}
+# Numeric Variables
+student_clean %>%
+  select(all_of(num_vars), Pass) %>%
+  select(-Exam_Score) %>%  # exclude Exam_Score since Pass is derived from it directly
+  pivot_longer(-Pass, names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = Pass, y = value, fill = Pass)) +
+  geom_boxplot() +
+  facet_wrap(~ variable, scales = "free") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  labs(title = "Numeric Predictors by Pass/Fail")
+```
+
+```{r}
+student_clean %>%
+  select(all_of(num_vars), Pass) %>%
+  select(-Exam_Score) %>%
+  group_by(Pass) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+# Attendance and Hours_Studied seem to be significant and related to attendance
+# Physical Activity, Sleep_Hours and Tutoring_Sessions seem less significant
+```
+
+```{r}
+# Categorical Variables
+student_clean %>%
+  select(all_of(cat_vars), Pass) %>%
+  mutate(across(all_of(cat_vars), as.character)) %>%
+  pivot_longer(-Pass, names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = Pass)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ variable, scales = "free_x", ncol = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Pass Rate by Categorical Variable", y = "Proportion")
+```
+
+```{r}
+# This plot is to test a potential interaction between Hours Studied and Parental Involvement, seeing how the pattern spans across all levels
+student_clean %>%
+  ggplot(aes(x = Hours_Studied, fill = Pass)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ Parental_Involvement) +
+  theme_minimal() +
+  labs(title = "Hours Studied Distribution by Pass/Fail, across Parental Involvement")
+
+student_clean %>%
+  group_by(Parental_Involvement) %>%
+  summarise(
+    mean_fail = mean(Hours_Studied[Pass == "Fail"]),
+    mean_pass = mean(Hours_Studied[Pass == "Pass"]),
+    gap = mean_pass - mean_fail,
+    sd_pooled = sd(Hours_Studied)
+  )
+
+# Low seems to behave different from Medium and High, who behave similarly. 
+# Plausible pattern worth testing as an interaction in objective 2.
+```
+
+```{r}
+# Running the same standardized gap check for categorical variables
+
+# Function: for a given categorical variable, compute the standardized Hours_Studied gap between Pass and Fail within each level
+gap_check <- function(catvar) {
+  student_clean %>%
+    group_by(.data[[catvar]]) %>%
+    summarise(
+      mean_fail  = mean(Hours_Studied[Pass == "Fail"]),
+      mean_pass  = mean(Hours_Studied[Pass == "Pass"]),
+      gap        = mean_pass - mean_fail,
+      sd_pooled  = sd(Hours_Studied),
+      std_gap    = round(gap / sd_pooled, 3),
+      n          = n(),
+      .groups = "drop"
+    ) %>%
+    rename(level = 1) %>%
+    mutate(level = as.character(level)) %>%
+    mutate(variable = catvar, .before = 1)
+}
+
+gap_results <- map_dfr(cat_vars, gap_check)
+gap_results %>% 
+  select(variable, level, n, mean_fail, mean_pass, gap, std_gap) %>%
+  knitr::kable(digits = 3)
+
+gap_range <- gap_results %>%
+  group_by(variable) %>%
+  summarise(
+    min_std_gap = min(std_gap),
+    max_std_gap = max(std_gap),
+    range_std_gap = round(max_std_gap - min_std_gap, 3),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(range_std_gap))
+
+gap_range
+```
+
+### STEP 5 TAKEAWAYS:
+`Parental_Involvement` and `Motivation_Level` stand out as the two strongest candidates for interaction terms. There is a clear separation in range, and both have reasonably large groups at every level.\
+\
+`Learning_Disabilities` looks promising (ranked at 3rd) but proceed with caution, as the "Yes" group (n = 668) is noticeably smaller than the "No" group (n = 5,709). That gap could partly reflect sampling noise rather than a true interaction. Still worth testing formally, just don't over-weight it from this screening alone.\
+\
+`Gender` and `Extracurricular_Activities` show almost no variation in `std_gap` across their levels (0.012 and 0.007). There is virtually no evidence of an interaction with `Hours_Studied` here. These variables are safe to leave as simple additive terms (no interaction).\
+\
+Everything else in the middle (`Teacher_Quality`, `Parental_Education_Level`, `Peer_Influence`, etc.) shows a modest but real signal. Not as significant as the top 2.
+
+### Step 6: Multicollinearity Check
+```{r}
+# Numeric Predictors
+student_clean %>%
+  select(all_of(num_vars)) %>%
+  cor() %>%
+  round(3)
+
+# Noticeable: Moderately high correlation between Attendance and Exam_Score (0.582) and Hours_Studied and Exam_Score (0.446). Exam_Score is the common denominator.
+```
+
+```{r}
+student_clean %>%
+  select(all_of(num_vars), -Exam_Score) %>%
+  ggpairs(
+    lower = list(continuous = wrap("points", alpha = 0.3, size = 0.5)),
+    diag = list(continuous = wrap("densityDiag")),
+    upper = list(continuous = wrap("cor", size = 4))
+  ) +
+  theme_minimal()
+
+# There is no pair of predictors that are correlated with one another according to this plot. All values are close to 0.
+```
+
+```{r}
+# Categorical Predictors - Chi-sq Independence Test
+table(student_clean$Family_Income, student_clean$Access_to_Resources) %>%
+  prop.table(margin = 1) %>%
+  round(3)
+
+chisq.test(table(student_clean$Family_Income, student_clean$Access_to_Resources))
+
+# Test Results: There's no statistical evidence of an association between Family_Income and Access_to_Resources in this data. (p-value = 0.4071)
+# We failed to reject the null hypothesis of independence between the two variables 
+# The observed proportions are nearly identical across income levels, suggesting no meaningful multicollinearity concern between these two variables.
+```
+
+```{r}
+# Creating a loop to run a chi-square test across all pairwise combinations of categorical variables
+
+cat_pairs <- combn(cat_vars, 2, simplify = FALSE)
+
+chisq_results <- map_dfr(cat_pairs, function(pair) {
+  var1 <- pair[1]
+  var2 <- pair[2]
+  
+  tbl <- table(student_clean[[var1]], student_clean[[var2]])
+  
+  test <- suppressWarnings(chisq.test(tbl))
+  
+  tibble(
+    var1     = var1,
+    var2     = var2,
+    chi_sq   = round(unname(test$statistic), 3),
+    df       = unname(test$parameter),
+    p_value  = round(test$p.value, 4),
+    cramers_v = round(sqrt(unname(test$statistic) / (sum(tbl) * (min(dim(tbl)) - 1))), 3)
+  )
+})
+
+chisq_results %>% arrange(desc(cramers_v)) 
+
+#Cramer's V = statistical measure of the strength of association between two categorical variables, ranging from 0 (no association) to 1 (perfect association) -- https://www.statology.org/interpret-cramers-v/
+
+# Cramer's V Thresholds based upon DF:
+# df*	Small	Medium	Large
+# 1	  0.10	0.30	  0.50
+# 2	  0.07	0.21	  0.35
+# 3	  0.06	0.17	  0.29
+# 4	  0.05	0.15	  0.25
+
+# 0.2 sits in the middle of the Medium range, so that's the value chosen as the threshold
+
+chisq_results %>%
+  filter(cramers_v > 0.2) %>%
+  arrange(desc(cramers_v))
+```
+
+### STEP 6 TAKEAWAYS:
+Running a chi-square test of independence including Cramer's V across all 78 categorical variable combinations resulted in a maximum association of V = 0.034 (Access_to_Resources vs. School_Type). This indicates negligible multicollinearity risk among categorical predictors, so multicollinearity is not a concern with all the categorical variable pairs.\ 
+\
+This is corroborated by the earlier chi-square test between Family_Income and Access_to_Resources (p = 0.407), which similarly showed no meaningful relationship.\
+\
+Even if the smallest threshold (0.05) was chosen, our results will still be the same, as 0.034 is the max Cramer's V on the list. This supports our conclusion of no multicollinearity between catagorical variables even further.
+
+
