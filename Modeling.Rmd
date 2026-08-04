@@ -1,0 +1,228 @@
+---
+title: "Student Performance Factors — Modeling"
+author: "Wolf & Avery"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 6)
+
+library(tidyverse)
+library(gt)
+library(pROC)
+
+source("R/load.R")
+source("R/preprocess.R")
+source("R/missingness.R")
+source("R/split.R")
+source("R/model.R")
+source("R/tune.R")
+source("R/eval.R")
+source("R/eval_plots.R")
+source("R/tables.R")
+source("R/theme.R")
+
+ggplot2::theme_set(report_theme())
+```
+
+# 1. Load & Prepare Data
+
+```{r load}
+raw <- load_("StudentPerformanceFactors.csv")
+miss <- count_missing_values(raw)
+df <- impute_categoricals(raw, miss$variable)
+df <- add_target_and_factors(df)
+
+num_vars <- c("Hours_Studied", "Attendance", "Sleep_Hours", "Previous_Scores",
+              "Tutoring_Sessions", "Physical_Activity")
+cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
+```
+
+# 2. Train / Validation / Test Split
+
+Stratified on `Status` so every split preserves the Pass/Fail ratio.
+
+```{r split}
+splits <- split_data(df, c(train = 0.6, val = 0.2, test = 0.2),
+                      strata = "Status", seed = 42)
+sapply(splits, nrow)
+```
+
+# 3. Scale / Impute Numeric Predictors
+
+Fit on train only; apply the same train-derived mean/sd to validation and test.
+
+```{r preprocess}
+prep_params <- fit_preprocessor(splits$train, num_vars)
+train_df <- apply_preprocessor(prep_params, splits$train)
+val_df   <- apply_preprocessor(prep_params, splits$val)
+test_df  <- apply_preprocessor(prep_params, splits$test)
+```
+
+# 4. Model Specs & Hyperparameter Search Spaces
+
+Each model provides a `fit_fn(train_df, ...hyperparams)`; models with a
+`search_space` are tuned via `grid_search()`, the rest are fit directly.
+All models predict through the shared `predict_fn` (dispatches on model
+class via `predict_probs()`).
+
+```{r model-specs}
+predict_fn <- function(model, d) predict_probs(model, d, num_vars, cat_vars)
+
+model_specs <- list(
+  logistic = list(
+    fit_fn = function(train_df) fit_logistic(train_df, num_vars, cat_vars),
+    search_space = NULL
+  ),
+  logistic_complex = list(
+    fit_fn = function(train_df) {
+      fit_logistic_complex(train_df, num_vars, cat_vars,
+        c("Hours_Studied:Parental_Involvement", "Hours_Studied:Motivation_Level"))
+    },
+    search_space = NULL
+  ),
+  lda = list(
+    fit_fn = function(train_df) fit_lda(train_df, num_vars, cat_vars),
+    search_space = NULL
+  ),
+  qda = list(
+    fit_fn = function(train_df) fit_qda(train_df, num_vars, cat_vars),
+    search_space = NULL
+  ),
+  glmnet = list(
+    fit_fn = function(train_df, alpha) fit_glmnet(train_df, num_vars, cat_vars, alpha = alpha),
+    search_space = list(alpha = c(0, 0.25, 0.5, 0.75, 1))
+  ),
+  tree = list(
+    fit_fn = function(train_df, cp) {
+      fit_tree(train_df, num_vars, cat_vars, control = rpart::rpart.control(cp = cp))
+    },
+    search_space = list(cp = c(0.001, 0.005, 0.01, 0.05))
+  ),
+  rf = list(
+    fit_fn = function(train_df, mtry, ntree) {
+      fit_rf(train_df, num_vars, cat_vars, mtry = mtry, ntree = ntree)
+    },
+    search_space = list(mtry = c(2, 4, 6), ntree = c(200, 400))
+  ),
+  xgboost = list(
+    fit_fn = function(train_df, nrounds, max_depth) {
+      fit_xgboost(train_df, num_vars, cat_vars, nrounds = nrounds, max_depth = max_depth)
+    },
+    search_space = list(nrounds = c(50, 100), max_depth = c(3, 6))
+  )
+)
+```
+
+# 5. Fit Each Model on Train, Evaluate on Validation
+
+KNN is handled separately below (`class::knn` has no persisted model
+object, so it can't share the generic `fit_fn`/`predict_fn` interface).
+
+```{r fit-and-tune}
+fitted_models <- list()
+val_probs <- list()
+best_hp <- list()
+
+for (name in names(model_specs)) {
+  spec <- model_specs[[name]]
+
+  if (is.null(spec$search_space)) {
+    model <- spec$fit_fn(train_df)
+  } else {
+    gs <- grid_search(train_df, val_df, spec$fit_fn, predict_fn, spec$search_space)
+    best_row <- gs[gs$best, , drop = FALSE][1, ]
+    hp <- as.list(best_row[names(spec$search_space)])
+    best_hp[[name]] <- hp
+    model <- do.call(spec$fit_fn, c(list(train_df), hp))
+  }
+
+  fitted_models[[name]] <- model
+  val_probs[[name]] <- predict_fn(model, val_df)
+}
+
+best_hp
+```
+
+## KNN
+
+```{r knn}
+knn_probs <- function(train_df, target_df, num_vars, cat_vars, k) {
+  build_x <- function(d) {
+    model_df <- d %>% dplyr::select(dplyr::all_of(num_vars), dplyr::all_of(cat_vars))
+    stats::model.matrix(~ . - 1, data = model_df)
+  }
+  train_x  <- build_x(train_df)
+  target_x <- build_x(target_df)
+  train_cl <- factor(dplyr::if_else(train_df$Status == "Fail", 1L, 0L))
+
+  pred <- class::knn(train_x, target_x, cl = train_cl, k = k, prob = TRUE)
+  p <- attr(pred, "prob")
+  ifelse(pred == "1", p, 1 - p)
+}
+
+actual_val <- as.integer(val_df$Status == "Fail")
+
+k_grid <- c(3, 5, 7, 9, 11, 15)
+k_auc <- sapply(k_grid, function(k) {
+  probs <- knn_probs(train_df, val_df, num_vars, cat_vars, k)
+  as.numeric(pROC::auc(actual_val, probs, quiet = TRUE))
+})
+best_k <- k_grid[which.max(k_auc)]
+best_hp$knn <- list(k = best_k)
+
+val_probs$knn <- knn_probs(train_df, val_df, num_vars, cat_vars, best_k)
+```
+
+## Validation Performance (all models, default 0.5 threshold)
+
+```{r val-comparison}
+val_comparison <- compare_models(val_probs, actual_val)
+table_model_comparison(val_comparison)
+```
+
+# 6. Threshold Tuning (Validation Set)
+
+Per-model F1-optimal threshold, chosen on validation only.
+
+```{r threshold-tuning}
+thresholds <- purrr::map_dbl(val_probs, ~ optimal_threshold(.x, actual_val, metric = "youdens_j"))
+thresholds
+```
+
+# 7. Evaluate All Models on Test (Optimal Thresholds)
+
+```{r test-probs}
+test_probs <- purrr::imap(fitted_models, function(model, name) predict_fn(model, test_df))
+test_probs$knn <- knn_probs(train_df, test_df, num_vars, cat_vars, best_k)
+
+actual_test <- as.integer(test_df$Status == "Fail")
+test_comparison <- compare_models(test_probs, actual_test, thresholds = thresholds)
+table_model_comparison(test_comparison)
+```
+
+# 8. Confusion Matrix — Best Model
+
+```{r best-model-cm}
+best_name <- test_comparison$model[which.max(test_comparison$f1)]
+best_threshold <- thresholds[[best_name]]
+
+best_eval <- evaluate_predictions(test_probs[[best_name]], actual_test, threshold = best_threshold)
+plot_confusion_matrix(best_eval$confusion_matrix,
+                       title = paste0("Confusion Matrix — ", best_name,
+                                       " (threshold = ", round(best_threshold, 2), ")"))
+```
+
+# 9. ROC Curves — All Models
+
+```{r roc-all, fig.height=7}
+plot_roc(test_probs, actual_test)
+```

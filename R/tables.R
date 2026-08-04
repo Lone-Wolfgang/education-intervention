@@ -106,3 +106,25 @@ table_fit_quality <- function(fit) {
     gt::fmt_number(dplyr::everything(), decimals = 2) %>%
     gt::tab_header(title = "Model fit (McFadden pseudo-R\u00b2)")
 }
+
+# gt table comparing models (output of compare_models()): Model,
+# Threshold, AUC, Accuracy, Precision, Sensitivity, Specificity, F1,
+# Balanced Accuracy, Youden's J, Prevalence — the row with the highest
+# F1 is bolded.
+table_model_comparison <- function(comparison) {
+  best_row <- which(comparison$f1 == max(comparison$f1, na.rm = TRUE))
+
+  comparison %>%
+    gt::gt() %>%
+    gt::fmt_number(c(threshold, auc, accuracy, precision, sensitivity,
+                     specificity, f1, balanced_accuracy, youdens_j, prevalence),
+                   decimals = 3) %>%
+    gt::cols_label(model = "Model", threshold = "Threshold", auc = "AUC",
+                   accuracy = "Accuracy", precision = "Precision",
+                   sensitivity = "Sensitivity", specificity = "Specificity",
+                   f1 = "F1", balanced_accuracy = "Balanced Accuracy",
+                   youdens_j = "Youden's J", prevalence = "Prevalence") %>%
+    gt::tab_header(title = "Model Comparison") %>%
+    gt::tab_style(style     = gt::cell_text(weight = "bold"),
+                   locations = gt::cells_body(rows = best_row))
+}
