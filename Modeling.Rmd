@@ -33,20 +33,29 @@ source("R/theme.R")
 ggplot2::theme_set(report_theme())
 ```
 
-# 1. Load & Prepare Data
+# 1. Pass/Fail Threshold
+
+`CUTOFF` sets the Pass/Fail split used for every model below; see `EDA.Rmd`
+for the threshold-tuning plot used to choose it.
+
+```{r cutoff-param}
+CUTOFF <- 63
+```
+
+# 2. Load & Prepare Data
 
 ```{r load}
 raw <- load_("StudentPerformanceFactors.csv")
 miss <- count_missing_values(raw)
 df <- impute_categoricals(raw, miss$variable)
-df <- add_target_and_factors(df)
+df <- add_target_and_factors(df, cutoff = CUTOFF)
 
 num_vars <- c("Hours_Studied", "Attendance", "Sleep_Hours", "Previous_Scores",
               "Tutoring_Sessions", "Physical_Activity")
 cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
 ```
 
-# 2. Train / Validation / Test Split
+# 3. Train / Validation / Test Split
 
 Stratified on `Status` so every split preserves the Pass/Fail ratio.
 
@@ -56,7 +65,7 @@ splits <- split_data(df, c(train = 0.6, val = 0.2, test = 0.2),
 sapply(splits, nrow)
 ```
 
-# 3. Scale / Impute Numeric Predictors
+# 4. Scale / Impute Numeric Predictors
 
 Fit on train only; apply the same train-derived mean/sd to validation and test.
 
@@ -67,12 +76,12 @@ val_df   <- apply_preprocessor(prep_params, splits$val)
 test_df  <- apply_preprocessor(prep_params, splits$test)
 ```
 
-# 4. Model Specs & Hyperparameter Search Spaces
+# 5. Model Specs & Hyperparameter Search Spaces
 
 Each model provides a `fit_fn(train_df, ...hyperparams)`; models with a
-`search_space` are tuned via `grid_search()`, the rest are fit directly.
-All models predict through the shared `predict_fn` (dispatches on model
-class via `predict_probs()`).
+`search_space` are tuned via stratified 5-fold CV on train (`cv_grid_search()`),
+the rest are fit directly. All models predict through the shared `predict_fn`
+(dispatches on model class via `predict_probs()`).
 
 ```{r model-specs}
 predict_fn <- function(model, d) predict_probs(model, d, num_vars, cat_vars)
@@ -122,9 +131,15 @@ model_specs <- list(
 )
 ```
 
-# 5. Fit Each Model on Train, Evaluate on Validation
+# 6. Select Hyperparameters via 5-Fold CV, Fit Final Model on Train
 
-KNN is handled separately below (`class::knn` has no persisted model
+For each model with a `search_space`, hyperparameters are selected by
+stratified 5-fold CV on `splits$train` (raw/unscaled — `cv_grid_search()`
+refits the numeric preprocessor on each fold's training rows only, to
+avoid leakage into the held-out fold). The winning hyperparameters are then
+used to fit one final model on the full (globally scaled) `train_df`.
+Validation predictions from that final model are kept for threshold tuning
+below. KNN is handled separately (`class::knn` has no persisted model
 object, so it can't share the generic `fit_fn`/`predict_fn` interface).
 
 ```{r fit-and-tune}
@@ -138,8 +153,9 @@ for (name in names(model_specs)) {
   if (is.null(spec$search_space)) {
     model <- spec$fit_fn(train_df)
   } else {
-    gs <- grid_search(train_df, val_df, spec$fit_fn, predict_fn, spec$search_space)
-    best_row <- gs[gs$best, , drop = FALSE][1, ]
+    cv <- cv_grid_search(splits$train, num_vars, cat_vars, spec$fit_fn,
+                          predict_fn, spec$search_space, k = 5, seed = 42)
+    best_row <- cv[cv$best, , drop = FALSE][1, ]
     hp <- as.list(best_row[names(spec$search_space)])
     best_hp[[name]] <- hp
     model <- do.call(spec$fit_fn, c(list(train_df), hp))
@@ -154,29 +170,15 @@ best_hp
 
 ## KNN
 
+`k` is selected by the same stratified 5-fold CV procedure (`cv_select_knn_k()`),
+then the final model predicts on `val_df` using the full `train_df`.
+
 ```{r knn}
-knn_probs <- function(train_df, target_df, num_vars, cat_vars, k) {
-  build_x <- function(d) {
-    model_df <- d %>% dplyr::select(dplyr::all_of(num_vars), dplyr::all_of(cat_vars))
-    stats::model.matrix(~ . - 1, data = model_df)
-  }
-  train_x  <- build_x(train_df)
-  target_x <- build_x(target_df)
-  train_cl <- factor(dplyr::if_else(train_df$Status == "Fail", 1L, 0L))
-
-  pred <- class::knn(train_x, target_x, cl = train_cl, k = k, prob = TRUE)
-  p <- attr(pred, "prob")
-  ifelse(pred == "1", p, 1 - p)
-}
-
 actual_val <- as.integer(val_df$Status == "Fail")
 
 k_grid <- c(3, 5, 7, 9, 11, 15)
-k_auc <- sapply(k_grid, function(k) {
-  probs <- knn_probs(train_df, val_df, num_vars, cat_vars, k)
-  as.numeric(pROC::auc(actual_val, probs, quiet = TRUE))
-})
-best_k <- k_grid[which.max(k_auc)]
+knn_cv <- cv_select_knn_k(splits$train, num_vars, cat_vars, k_grid, folds = 5, seed = 42)
+best_k <- knn_cv$k[knn_cv$best][1]
 best_hp$knn <- list(k = best_k)
 
 val_probs$knn <- knn_probs(train_df, val_df, num_vars, cat_vars, best_k)
@@ -184,12 +186,16 @@ val_probs$knn <- knn_probs(train_df, val_df, num_vars, cat_vars, best_k)
 
 ## Validation Performance (all models, default 0.5 threshold)
 
+Sanity check on the CV-selected final models before threshold tuning
+(hyperparameters were already chosen via CV on train above, so this is no
+longer part of model selection).
+
 ```{r val-comparison}
 val_comparison <- compare_models(val_probs, actual_val)
 table_model_comparison(val_comparison)
 ```
 
-# 6. Threshold Tuning (Validation Set)
+# 7. Decision-Threshold Tuning (Validation Set)
 
 Per-model F1-optimal threshold, chosen on validation only.
 
@@ -198,7 +204,21 @@ thresholds <- purrr::map_dbl(val_probs, ~ optimal_threshold(.x, actual_val, metr
 thresholds
 ```
 
-# 7. Evaluate All Models on Test (Optimal Thresholds)
+For each model, sweep the decision threshold from 0 to 1 and plot the
+selected `metrics` (default sensitivity/specificity) against threshold,
+marking the threshold that maximizes `target` ("f1" or "youdens_j",
+default "youdens_j") with a vertical line and annotation. See
+`plot_threshold_tuning()` in `R/eval_plots.R`.
+
+```{r plot-threshold-tuning, fig.width=8, fig.height=5}
+purrr::walk(names(val_probs), function(name) {
+  p <- plot_threshold_tuning(val_probs[[name]], actual_val) +
+    ggplot2::labs(title = paste0("Decision-Threshold Tuning — ", name))
+  print(p)
+})
+```
+
+# 8. Evaluate All Models on Test (Optimal Thresholds)
 
 ```{r test-probs}
 test_probs <- purrr::imap(fitted_models, function(model, name) predict_fn(model, test_df))
@@ -209,7 +229,7 @@ test_comparison <- compare_models(test_probs, actual_test, thresholds = threshol
 table_model_comparison(test_comparison)
 ```
 
-# 8. Confusion Matrix — Best Model
+# 9. Confusion Matrix — Best Model
 
 ```{r best-model-cm}
 best_name <- test_comparison$model[which.max(test_comparison$f1)]
@@ -221,7 +241,7 @@ plot_confusion_matrix(best_eval$confusion_matrix,
                                        " (threshold = ", round(best_threshold, 2), ")"))
 ```
 
-# 9. ROC Curves — All Models
+# 10. ROC Curves — All Models
 
 ```{r roc-all, fig.height=7}
 plot_roc(test_probs, actual_test)

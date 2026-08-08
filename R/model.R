@@ -56,6 +56,24 @@ fit_knn <- function(train_df, test_df, num_vars, cat_vars, k = 5) {
   class::knn(train_x, test_x, cl = train_cl, k = k)
 }
 
+# KNN sibling of fit_knn that returns predicted probabilities instead of
+# class labels: builds dummy-encoded design matrices for train/target,
+# runs class::knn(..., prob = TRUE), and returns P(Fail = 1) for each row
+# in target_df (the KNN equivalent of predict_probs() in R/eval.R).
+knn_probs <- function(train_df, target_df, num_vars, cat_vars, k) {
+  build_x <- function(d) {
+    model_df <- d %>% dplyr::select(dplyr::all_of(num_vars), dplyr::all_of(cat_vars))
+    stats::model.matrix(~ . - 1, data = model_df)
+  }
+  train_x  <- build_x(train_df)
+  target_x <- build_x(target_df)
+  train_cl <- factor(dplyr::if_else(train_df$Status == "Fail", 1L, 0L))
+
+  pred <- class::knn(train_x, target_x, cl = train_cl, k = k, prob = TRUE)
+  p <- attr(pred, "prob")
+  ifelse(pred == "1", p, 1 - p)
+}
+
 # Fit a regularized (elastic net) logistic regression via cross-validated
 # lambda selection. `alpha = 1` is lasso, `alpha = 0` is ridge.
 # Returns the glmnet::cv.glmnet object.

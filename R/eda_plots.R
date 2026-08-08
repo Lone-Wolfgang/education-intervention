@@ -10,7 +10,7 @@ source("R/colors.R")
 # threshold or the target grade) has the cumulative pass proportion closest
 # to `target_prop` is bolded. The table reports "Threshold", "Cum. %
 # Passing", and "Cum. % Failing" for each grade.
-plot_threshold_tuning <- function(df, thresholds = numeric(0), target_prop = NULL,
+plot_pass_fail_threshold_tuning <- function(df, thresholds = numeric(0), target_prop = NULL,
                                    score_var = "Exam_Score", bins = 30) {
   scores <- df[[score_var]]
 

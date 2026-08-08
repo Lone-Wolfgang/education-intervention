@@ -1,26 +1,81 @@
-# Rigid grid search: expands `search_space` (a named list of vectors) into
-# every hyperparameter combination via expand.grid, fits each on train_df
-# with `fit_fn(train_df, ...hyperparams)`, scores each on val_df with AUC
-# using `predict_fn(model, val_df)` (must return predicted probability of
-# the positive class), and returns a data frame with one column per
-# hyperparameter, an `auc` column, and a `best` flag (TRUE for the row(s)
-# with the highest AUC).
-grid_search <- function(train_df, val_df, fit_fn, predict_fn, search_space,
-                         target = "Status", positive = "Fail") {
+# Stratified k-fold CV grid search: expands `search_space` (a named list of
+# vectors) into every hyperparameter combination via expand.grid. For each
+# combination, splits `train_raw` (unscaled) into `k` stratified folds via
+# make_cv_folds(); for each fold, fits a fresh preprocessor on that fold's
+# training rows only (no leakage), applies it to both the fold-train and
+# fold-held-out rows, fits the model with `fit_fn(fold_train, ...hyperparams)`,
+# and scores it on the fold-held-out rows with AUC using
+# `predict_fn(model, fold_val)` (must return predicted probability of the
+# positive class). Returns a data frame with one column per hyperparameter,
+# a `mean_auc` column (averaged across the k folds), and a `best` flag (TRUE
+# for the row(s) with the highest mean_auc).
+cv_grid_search <- function(train_raw, num_vars, cat_vars, fit_fn, predict_fn,
+                            search_space, k = 5, seed = NULL,
+                            target = "Status", positive = "Fail") {
   grid <- expand.grid(search_space, stringsAsFactors = FALSE)
-  actual <- as.integer(val_df[[target]] == positive)
+  fold <- make_cv_folds(train_raw, k = k, strata = target, seed = seed)
 
-  auc <- numeric(nrow(grid))
+  mean_auc <- numeric(nrow(grid))
   for (i in seq_len(nrow(grid))) {
     params <- as.list(grid[i, , drop = FALSE])
-    model  <- do.call(fit_fn, c(list(train_df), params))
-    probs  <- predict_fn(model, val_df)
-    auc[i] <- as.numeric(pROC::auc(actual, probs, quiet = TRUE))
+
+    fold_auc <- numeric(k)
+    for (f in seq_len(k)) {
+      fold_train_raw <- train_raw[fold != f, , drop = FALSE]
+      fold_val_raw   <- train_raw[fold == f, , drop = FALSE]
+
+      prep_params <- fit_preprocessor(fold_train_raw, num_vars)
+      fold_train  <- apply_preprocessor(prep_params, fold_train_raw)
+      fold_val    <- apply_preprocessor(prep_params, fold_val_raw)
+
+      model <- do.call(fit_fn, c(list(fold_train), params))
+      probs <- predict_fn(model, fold_val)
+      actual <- as.integer(fold_val_raw[[target]] == positive)
+      fold_auc[f] <- as.numeric(pROC::auc(actual, probs, quiet = TRUE))
+    }
+
+    mean_auc[i] <- mean(fold_auc)
   }
 
-  grid$auc  <- auc
-  grid$best <- grid$auc == max(grid$auc)
+  grid$mean_auc <- mean_auc
+  grid$best <- grid$mean_auc == max(grid$mean_auc)
   grid
+}
+
+# CV sibling of cv_grid_search() for KNN, which has no persisted model
+# object and so can't share the generic fit_fn/predict_fn interface. Same
+# stratified k-fold / per-fold-refit-preprocessing procedure, but scores
+# each `k` in `k_grid` via `knn_probs()`. Returns a data frame with columns
+# `k`, `mean_auc`, and a `best` flag (TRUE for the row(s) with the highest
+# mean_auc).
+cv_select_knn_k <- function(train_raw, num_vars, cat_vars, k_grid, folds = 5,
+                             seed = NULL, target = "Status", positive = "Fail") {
+  fold <- make_cv_folds(train_raw, k = folds, strata = target, seed = seed)
+
+  mean_auc <- numeric(length(k_grid))
+  for (i in seq_along(k_grid)) {
+    kk <- k_grid[i]
+
+    fold_auc <- numeric(folds)
+    for (f in seq_len(folds)) {
+      fold_train_raw <- train_raw[fold != f, , drop = FALSE]
+      fold_val_raw   <- train_raw[fold == f, , drop = FALSE]
+
+      prep_params <- fit_preprocessor(fold_train_raw, num_vars)
+      fold_train  <- apply_preprocessor(prep_params, fold_train_raw)
+      fold_val    <- apply_preprocessor(prep_params, fold_val_raw)
+
+      probs <- knn_probs(fold_train, fold_val, num_vars, cat_vars, kk)
+      actual <- as.integer(fold_val_raw[[target]] == positive)
+      fold_auc[f] <- as.numeric(pROC::auc(actual, probs, quiet = TRUE))
+    }
+
+    mean_auc[i] <- mean(fold_auc)
+  }
+
+  result <- data.frame(k = k_grid, mean_auc = mean_auc)
+  result$best <- result$mean_auc == max(result$mean_auc)
+  result
 }
 
 # Sweep `thresholds` and return the one that maximizes `metric` ("f1" or

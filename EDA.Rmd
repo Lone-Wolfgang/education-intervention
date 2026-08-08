@@ -48,7 +48,7 @@ its cumulative pass/fail rates, bolding whichever grade comes closest to
 `target_prop`.
 
 ```{r threshold-tuning, fig.width=10, fig.height=5}
-plot_threshold_tuning(
+plot_pass_fail_threshold_tuning(
   raw, 
   thresholds = c(60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70), 
   target_prop = 0.9

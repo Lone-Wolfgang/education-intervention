@@ -39,6 +39,28 @@ split_data <- function(df, props, strata = "Status", seed = NULL) {
     setNames(names(props))
 }
 
+# Assign each row of df to one of k folds, stratified by `strata` so every
+# fold preserves the class balance of that column (same stratified-shuffle
+# pattern as split_data()). Returns an integer vector (length nrow(df)) of
+# fold ids 1..k.
+make_cv_folds <- function(df, k = 5, strata = "Status", seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  n <- nrow(df)
+  fold <- integer(n)
+
+  strata_vals <- df[[strata]]
+  for (lvl in unique(strata_vals)) {
+    idx <- which(strata_vals == lvl)
+    idx <- sample(idx)
+    n_lvl <- length(idx)
+
+    fold[idx] <- rep(seq_len(k), length.out = n_lvl)
+  }
+
+  fold
+}
+
 # Fit scaling/imputation parameters on the training data only: for each
 # numeric column, the mean (used for imputation) and mean/sd (used for
 # scaling), both computed from non-missing train values.
