@@ -1,6 +1,102 @@
 source("R/theme.R")
 source("R/colors.R")
 
+# Histogram of `score_var` with an overlaid cumulative "% would pass" line,
+# paired (via patchwork, 2:1 width) with a lookup table on the right instead
+# of on-plot annotations. `thresholds` is a vector of candidate cutoff grades
+# to look up (table rows only, no vline). `target_prop` is a single target
+# cumulative pass proportion; it is converted to the nearest grade that
+# achieves it, that grade gets its own vline, and whichever table row (a
+# threshold or the target grade) has the cumulative pass proportion closest
+# to `target_prop` is bolded. The table reports "Threshold", "Cum. %
+# Passing", and "Cum. % Failing" for each grade.
+plot_threshold_tuning <- function(df, thresholds = numeric(0), target_prop = NULL,
+                                   score_var = "Exam_Score", bins = 30) {
+  scores <- df[[score_var]]
+
+  pass_prop_at <- function(t) mean(scores >= t)
+
+  x_seq <- seq(floor(min(scores)), ceiling(max(scores)), by = 1)
+  cum_curve <- tibble::tibble(x = x_seq, cum_pass = sapply(x_seq, pass_prop_at))
+
+  thresh_df <- if (length(thresholds) > 0) {
+    tibble::tibble(x = thresholds, cum_pass = sapply(thresholds, pass_prop_at))
+  } else {
+    tibble::tibble(x = numeric(0), cum_pass = numeric(0))
+  }
+
+  target_grade <- if (!is.null(target_prop)) {
+    round(stats::quantile(scores, probs = 1 - target_prop, names = FALSE, type = 1))
+  } else {
+    NULL
+  }
+
+  target_df <- if (!is.null(target_grade)) {
+    tibble::tibble(x = target_grade, cum_pass = pass_prop_at(target_grade))
+  } else {
+    tibble::tibble(x = numeric(0), cum_pass = numeric(0))
+  }
+
+  mark_df <- dplyr::bind_rows(thresh_df, target_df) %>%
+    dplyr::distinct(x, .keep_all = TRUE) %>%
+    dplyr::arrange(x)
+
+  max_count <- max(graphics::hist(scores, breaks = bins, plot = FALSE)$counts)
+
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = .data[[score_var]])) +
+    ggplot2::geom_histogram(bins = bins, fill = pal_sequential[["high"]],
+                             color = "white", linewidth = 0.3) +
+    ggplot2::geom_line(data = cum_curve, ggplot2::aes(x = x, y = cum_pass * max_count),
+                        inherit.aes = FALSE, color = pal_binary[[2]], linewidth = 1) +
+    ggplot2::scale_y_continuous(
+      name = "Count",
+      sec.axis = ggplot2::sec_axis(~ . / max_count, name = "Cumulative % Passing",
+                                    labels = scales::percent)
+    ) +
+    ggplot2::labs(x = score_var) +
+    report_theme() +
+    ggplot2::theme(panel.grid.major = ggplot2::element_blank(),
+                   panel.grid.minor = ggplot2::element_blank())
+
+  if (!is.null(target_grade)) {
+    p <- p + ggplot2::geom_vline(xintercept = target_grade, linetype = "dashed", color = "grey30")
+  }
+
+  if (nrow(mark_df) == 0) return(p)
+
+  # Row whose cumulative pass rate is nearest the target proportion gets bolded.
+  bold_row <- if (!is.null(target_prop)) which.min(abs(mark_df$cum_pass - target_prop)) else integer(0)
+
+  tbl_gt <- mark_df %>%
+    dplyr::transmute(Threshold = round(x),
+                      `Cum. % Passing` = scales::percent(cum_pass, accuracy = 0.1),
+                      `Cum. % Failing` = scales::percent(1 - cum_pass, accuracy = 0.1)) %>%
+    gt::gt() %>%
+    gt::tab_options(table.font.size          = gt::px(16),
+                     column_labels.font.weight = "bold",
+                     table_body.hlines.style        = "hidden",
+                     table_body.vlines.style        = "hidden",
+                     column_labels.border.top.style = "hidden",
+                     column_labels.border.bottom.style = "hidden",
+                     table.border.top.style    = "hidden",
+                     table.border.bottom.style = "hidden",
+                     heading.border.bottom.style = "hidden")
+
+  if (length(bold_row) > 0) {
+    tbl_gt <- tbl_gt %>%
+      gt::tab_style(style = gt::cell_text(weight = "bold"),
+                     locations = gt::cells_body(rows = bold_row))
+  }
+
+  # Place the table as its own panel to the right of the plot, 2:1 width ratio.
+  (p + patchwork::wrap_table(tbl_gt, panel = "full")) +
+    patchwork::plot_layout(widths = c(1, 1)) +
+    patchwork::plot_annotation(
+      title = "Pass/Fail Threshold Tuning",
+      theme = ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5, size = 16, face = "bold"))
+    )
+}
+
 # Bar chart of Pass/Fail counts with percentage labels.
 plot_target_balance <- function(df) {
   df %>%

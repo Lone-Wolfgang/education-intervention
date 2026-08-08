@@ -1,11 +1,13 @@
-# gt table of Pass/Fail counts and shares.
-table_class_balance <- function(df) {
+# gt table of Pass/Fail counts and shares. `cutoff` is optional and only
+# used to label the title with the threshold that produced this balance.
+table_class_balance <- function(df, cutoff = NULL) {
+  title <- if (is.null(cutoff)) "Class Balance" else sprintf("Class Balance (cutoff = %s)", cutoff)
   df %>%
     dplyr::count(Status) %>%
     dplyr::mutate(pct = n / sum(n)) %>%
     gt::gt() %>%
     gt::fmt_percent(pct, decimals = 1) %>%
-    gt::tab_header(title = "Class Balance (cutoff = 61)")
+    gt::tab_header(title = title)
 }
 
 # Welch t-test of each numeric predictor between Fail and Pass groups;

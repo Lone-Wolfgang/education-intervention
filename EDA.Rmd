@@ -38,14 +38,38 @@ ggplot2::theme_set(report_theme())
 raw <- load_("StudentPerformanceFactors.csv")
 ```
 
-# 2. Missingness
+# 2. Pass/Fail Threshold Selection
+
+Before anything else, we pick the Pass/Fail cutoff. The plot below shows the
+distribution of `Exam_Score` with a cumulative "% would pass" line; the
+dashed line marks the grade needed to hit a target pass rate (`target_prop`).
+The table on the right lists each candidate threshold (`thresholds`) alongside
+its cumulative pass/fail rates, bolding whichever grade comes closest to
+`target_prop`.
+
+```{r threshold-tuning, fig.width=10, fig.height=5}
+plot_threshold_tuning(
+  raw, 
+  thresholds = c(60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70), 
+  target_prop = 0.9
+  )
+```
+
+`CUTOFF` drives every downstream Pass/Fail split in this notebook — change it
+here to re-run the EDA at a different threshold.
+
+```{r cutoff-param}
+CUTOFF <- 63
+```
+
+# 3. Missingness
 
 ```{r missing}
 miss <- count_missing_values(raw)
 tabulate_missing_values(miss)
 ```
 
-# 3. Imputation
+# 4. Imputation
 
 Target (`Exam_Score`) is complete, so no rows are dropped. The three affected
 categoricals are mode-imputed.
@@ -55,21 +79,21 @@ categoricals are mode-imputed.
 df <- impute_categoricals(raw, miss$variable)
 ```
 
-# 4. Pass/Fail Target (cutoff = 60) + Factor Setup
+# 5. Pass/Fail Target (cutoff = `r CUTOFF`) + Factor Setup
 
 Ordinal predictors get explicit level ordering (Low → High) so effects read
 monotonically; the rest become plain factors.
 
 ```{r target}
-df <- add_target_and_factors(df)
-table_class_balance(df)
+df <- add_target_and_factors(df, cutoff = CUTOFF)
+table_class_balance(df, cutoff = CUTOFF)
 ```
 
 ```{r target-plot}
 plot_target_balance(df)
 ```
 
-# 5. Univariate Distributions
+# 6. Univariate Distributions
 
 ```{r dist-num}
 num_vars <- c("Hours_Studied","Attendance","Sleep_Hours","Previous_Scores",
@@ -77,9 +101,9 @@ num_vars <- c("Hours_Studied","Attendance","Sleep_Hours","Previous_Scores",
 plot_num_distributions(df, num_vars)
 ```
 
-# 6. Associations with Failing
+# 7. Associations with Failing
 
-## 6a. Numeric predictors vs. Status
+## 7a. Numeric predictors vs. Status
 
 ```{r box-num}
 plot_num_by_status(df, num_vars)
@@ -90,7 +114,7 @@ smd <- ttest_summary(df, num_vars)
 table_ttest(smd)
 ```
 
-## 6b. Categorical predictors vs. Status
+## 7b. Categorical predictors vs. Status
 
 ```{r cat-assoc}
 cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
@@ -108,13 +132,13 @@ chi_res <- chisq_summary(df, cat_vars)
 table_chisq(chi_res)
 ```
 
-# 7. Correlation Structure
+# 8. Correlation Structure
 
 ```{r corr, fig.height=7}
 plot_correlation(df, num_vars)
 ```
 
-# 8. Logistic Regression
+# 9. Logistic Regression
 
 Model **P(Fail)**; positive coefficients raise failure risk. `Exam_Score` is
 excluded (it defines the target). Ordinal factors use polynomial contrasts, so
@@ -125,13 +149,13 @@ fit <- fit_logistic(df, num_vars, cat_vars)
 summary(fit)
 ```
 
-## 8a. Coefficients Table
+## 9a. Coefficients Table
 
 ```{r coef-table}
 table_coef(fit)
 ```
 
-## 8b. Log-Odds Forest Plot
+## 9b. Log-Odds Forest Plot
 
 ```{r logodds-plot, fig.height=7}
 plot_logodds(fit)
@@ -141,7 +165,7 @@ plot_logodds(fit)
 table_fit_quality(fit)
 ```
 
-# 9. Takeaways
+# 10. Takeaways
 
 ```{r takeaways, echo=FALSE, results='asis'}
 top_num <- smd$variable[1]
