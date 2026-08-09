@@ -1,4 +1,4 @@
-name: Deploy EDA to GitHub Pages
+name: Deploy EDA & Modeling to GitHub Pages
 
 on:
   push:
@@ -29,24 +29,39 @@ jobs:
       - name: Install R dependencies
         run: |
           install.packages(c(
-            "tidyverse", "GGally", "gt", "scales",
-            "patchwork", "broom", "rmarkdown", "knitr", "ggthemes"
+            "tidyverse", "GGally", "gt", "scales", "pROC",
+            "patchwork", "broom", "rmarkdown", "knitr", "ggthemes",
+            "glmnet", "randomForest", "xgboost", "rpart"
           ))
         shell: Rscript {0}
 
-      - name: Render EDA report
+      - name: Prepare site directory
         run: |
-          dir.create("_site", showWarnings = FALSE)
-          rmarkdown::render(
-            "EDA.Rmd",
-            output_file = "index.html",
-            output_dir = "_site"
-          )
+          mkdir -p site_src
+          cp EDA.Rmd site_src/index.Rmd
+          cp Modeling.Rmd site_src/Modeling.Rmd
+          cp -r R site_src/R
+          cp StudentPerformanceFactors.csv site_src/StudentPerformanceFactors.csv
+          cat > site_src/_site.yml << 'EOF'
+          name: "student-performance-report"
+          output_dir: "_site"
+          navbar:
+            title: "Student Performance Factors"
+            left:
+              - text: "EDA"
+                href: index.html
+              - text: "Modeling"
+                href: Modeling.html
+          EOF
+
+      - name: Render site (EDA + Modeling tabs)
+        working-directory: site_src
+        run: rmarkdown::render_site()
         shell: Rscript {0}
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: _site
+          path: site_src/_site
 
   deploy:
     needs: build

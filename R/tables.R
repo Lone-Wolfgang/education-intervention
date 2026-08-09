@@ -55,6 +55,28 @@ table_fail_rates <- function(fail_rates) {
     gt::tab_header(title = "Fail rate by category level")
 }
 
+# For each level of each variable in `cat_vars`, compute the standardized
+# gap in `num_var` between Pass and Fail (mean difference / pooled sd) —
+# used to screen categorical variables for candidate interaction terms
+# with `num_var`.
+interaction_gap_summary <- function(df, num_var, cat_vars) {
+  gap_check <- function(catvar) {
+    df %>%
+      dplyr::group_by(level = as.character(.data[[catvar]])) %>%
+      dplyr::summarise(
+        mean_fail = mean(.data[[num_var]][Status == "Fail"]),
+        mean_pass = mean(.data[[num_var]][Status == "Pass"]),
+        gap       = mean_pass - mean_fail,
+        sd_pooled = sd(.data[[num_var]]),
+        std_gap   = gap / sd_pooled,
+        n         = dplyr::n(),
+        .groups   = "drop"
+      ) %>%
+      dplyr::mutate(variable = catvar, .before = 1)
+  }
+  purrr::map_dfr(cat_vars, gap_check)
+}
+
 # Chi-square test of independence between each categorical predictor and
 # Status; returns statistic, df, and p-value sorted by p.
 chisq_summary <- function(df, cat_vars) {

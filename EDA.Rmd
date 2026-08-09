@@ -79,6 +79,22 @@ categoricals are mode-imputed.
 df <- impute_categoricals(raw, miss$variable)
 ```
 
+## 4a. Outlier Check
+
+`Exam_Score` is nominally a 0-100 scale; the boxplot below flags any value
+above that range (e.g. a `101`, likely a data entry error or bonus points),
+which is then dropped.
+
+```{r exam-outliers}
+plot_exam_score_outliers(df)
+```
+
+```{r exam-outliers-filter}
+nrow(df)
+df <- filter_exam_outliers(df)
+nrow(df)
+```
+
 # 5. Pass/Fail Target (cutoff = `r CUTOFF`) + Factor Setup
 
 Ordinal predictors get explicit level ordering (Low → High) so effects read
@@ -95,10 +111,23 @@ plot_target_balance(df)
 
 # 6. Univariate Distributions
 
+## 6a. Numeric
+
 ```{r dist-num}
 num_vars <- c("Hours_Studied","Attendance","Sleep_Hours","Previous_Scores",
               "Tutoring_Sessions","Physical_Activity")
 plot_num_distributions(df, num_vars)
+```
+
+```{r dist-num-box}
+plot_num_boxplots(df, num_vars)
+```
+
+## 6b. Categorical
+
+```{r dist-cat, fig.height=9}
+cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
+plot_cat_distributions(df, cat_vars)
 ```
 
 # 7. Associations with Failing
@@ -117,8 +146,6 @@ table_ttest(smd)
 ## 7b. Categorical predictors vs. Status
 
 ```{r cat-assoc}
-cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
-
 fail_rates <- fail_rate_summary(df, cat_vars)
 table_fail_rates(fail_rates)
 ```
@@ -127,15 +154,41 @@ table_fail_rates(fail_rates)
 plot_fail_rates_cat(df, cat_vars)
 ```
 
+```{r cat-plot-stacked, fig.height=9}
+plot_status_by_cat_stacked(df, cat_vars)
+```
+
 ```{r chisq}
 chi_res <- chisq_summary(df, cat_vars)
 table_chisq(chi_res)
+```
+
+## 7c. Interaction Screening
+
+`Hours_Studied` split by `Parental_Involvement` hints at a possible
+interaction — `Low` involvement behaves differently from `Medium`/`High`.
+The dot chart below generalizes this check across every categorical
+predictor, ranking each level by its standardized `Hours_Studied` gap
+between Pass and Fail; wide spread within a variable flags it as a
+candidate interaction term.
+
+```{r interaction-density}
+plot_hours_by_status_interaction(df)
+```
+
+```{r interaction-gap, fig.height=9}
+gap_results <- interaction_gap_summary(df, "Hours_Studied", cat_vars)
+plot_interaction_gap(gap_results)
 ```
 
 # 8. Correlation Structure
 
 ```{r corr, fig.height=7}
 plot_correlation(df, num_vars)
+```
+
+```{r corr-pairs, fig.width=10, fig.height=10}
+plot_num_pairs(df, num_vars)
 ```
 
 # 9. Logistic Regression

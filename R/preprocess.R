@@ -13,6 +13,12 @@ impute_categoricals <- function(df, cols) {
   df
 }
 
+# Drop rows with an implausible Exam_Score (> max_score, e.g. the 101 data
+# entry error), so the score stays on a consistent 0-100 scale.
+filter_exam_outliers <- function(df, max_score = 100) {
+  dplyr::filter(df, Exam_Score <= max_score)
+}
+
 # Derive the binary Status target from Exam_Score (>= cutoff is "Pass")
 # and re-level the categorical predictors into their natural order.
 add_target_and_factors <- function(df, cutoff = 61) {

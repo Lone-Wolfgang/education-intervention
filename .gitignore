@@ -6,3 +6,8 @@
 .DS_Store
 _site/
 EDA.html
+figure/*
+Modeling_dev.html
+Modeling_dev.Rmd
+*.html
+*.md

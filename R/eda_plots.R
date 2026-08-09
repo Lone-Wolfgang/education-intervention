@@ -126,6 +126,111 @@ plot_num_distributions <- function(df, num_vars) {
     report_theme()
 }
 
+# Faceted boxplots showing the distribution of each numeric predictor
+# (companion to plot_num_distributions' histograms).
+plot_num_boxplots <- function(df, num_vars) {
+  df %>%
+    dplyr::select(dplyr::all_of(num_vars)) %>%
+    tidyr::pivot_longer(dplyr::everything(), names_to = "variable", values_to = "value") %>%
+    ggplot2::ggplot(ggplot2::aes(x = variable, y = value)) +
+    ggplot2::geom_boxplot(fill = pal_sequential[["low"]], color = pal_sequential[["high"]],
+                          outlier.shape = 21, outlier.size = 2) +
+    ggplot2::facet_wrap(~ variable, scales = "free") +
+    ggplot2::labs(title = "Univariate Distributions (Numeric, Boxplots)", x = NULL, y = NULL) +
+    report_theme() +
+    ggplot2::theme(axis.text.x = ggplot2::element_blank())
+}
+
+# Single boxplot of the score variable, used as a quick outlier sanity check
+# (e.g. catching an out-of-range value like 101 on a 0-100 scale).
+plot_exam_score_outliers <- function(df, score_var = "Exam_Score", max_score = 100) {
+  df %>%
+    ggplot2::ggplot(ggplot2::aes(x = "", y = .data[[score_var]])) +
+    ggplot2::geom_boxplot(fill = pal_sequential[["low"]], color = pal_sequential[["high"]],
+                          outlier.color = pal_binary[[2]], outlier.size = 2.5, width = 0.3) +
+    ggplot2::geom_hline(yintercept = max_score, linetype = "dashed", color = "grey30") +
+    ggplot2::labs(title = paste(score_var, "Outlier Check"), x = NULL, y = score_var) +
+    report_theme()
+}
+
+# Faceted bar charts of raw counts for each categorical predictor.
+plot_cat_distributions <- function(df, cat_vars) {
+  df %>%
+    dplyr::select(dplyr::all_of(cat_vars)) %>%
+    dplyr::mutate(dplyr::across(dplyr::everything(), as.character)) %>%
+    tidyr::pivot_longer(dplyr::everything(), names_to = "variable", values_to = "value") %>%
+    ggplot2::ggplot(ggplot2::aes(x = value)) +
+    ggplot2::geom_bar(fill = pal_sequential[["high"]]) +
+    ggplot2::facet_wrap(~ variable, scales = "free", ncol = 3) +
+    ggplot2::labs(title = "Univariate Distributions (Categorical)", x = NULL, y = "Count") +
+    report_theme() +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 35, hjust = 1))
+}
+
+# Faceted stacked bar charts: Pass/Fail proportion per level of each
+# categorical predictor (companion view to plot_fail_rates_cat).
+plot_status_by_cat_stacked <- function(df, cat_vars) {
+  df %>%
+    dplyr::select(dplyr::all_of(cat_vars), Status) %>%
+    dplyr::mutate(dplyr::across(dplyr::all_of(cat_vars), as.character)) %>%
+    tidyr::pivot_longer(-Status, names_to = "variable", values_to = "value") %>%
+    ggplot2::ggplot(ggplot2::aes(x = value, fill = Status)) +
+    ggplot2::geom_bar(position = "fill") +
+    scale_fill_binary() +
+    ggplot2::facet_wrap(~ variable, scales = "free_x", ncol = 3) +
+    ggplot2::scale_y_continuous(labels = scales::percent) +
+    ggplot2::labs(title = "Pass/Fail Proportion by Categorical Variable", x = NULL, y = "Proportion") +
+    report_theme() +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 35, hjust = 1))
+}
+
+# Density of a numeric variable by Status, faceted by a grouping variable,
+# used to screen for potential interaction effects.
+plot_hours_by_status_interaction <- function(df, num_var = "Hours_Studied", group_var = "Parental_Involvement") {
+  df %>%
+    ggplot2::ggplot(ggplot2::aes(x = .data[[num_var]], fill = Status)) +
+    ggplot2::geom_density(alpha = 0.5) +
+    scale_fill_binary() +
+    ggplot2::facet_wrap(~ .data[[group_var]]) +
+    ggplot2::labs(title = paste(num_var, "Distribution by Status, across", group_var),
+                  x = num_var, y = "Density") +
+    report_theme()
+}
+
+# Dot chart of the standardized Pass/Fail gap in `num_var` for every level of
+# every categorical variable in `gap_results` (output of
+# interaction_gap_summary()), ranked within each variable by std_gap.
+plot_interaction_gap <- function(gap_results) {
+  n_vars <- dplyr::n_distinct(gap_results$variable)
+  var_colors <- grDevices::colorRampPalette(pal_categorical)(n_vars)
+
+  gap_results %>%
+    dplyr::mutate(label = paste0(variable, ": ", level)) %>%
+    ggplot2::ggplot(ggplot2::aes(x = std_gap,
+                                  y = forcats::fct_reorder(label, std_gap),
+                                  color = variable)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::scale_color_manual(values = var_colors) +
+    ggplot2::labs(title = "Standardized Hours_Studied Gap (Pass - Fail) by Category Level",
+                  x = "Standardized Gap", y = NULL, color = "Variable") +
+    report_theme() +
+    ggplot2::theme(legend.position = "right")
+}
+
+# Pairwise scatter/density/correlation matrix for the numeric predictors
+# (companion, more granular view to plot_correlation's heatmap).
+plot_num_pairs <- function(df, num_vars) {
+  df %>%
+    dplyr::select(dplyr::all_of(num_vars)) %>%
+    GGally::ggpairs(
+      lower = list(continuous = GGally::wrap("points", alpha = 0.3, size = 0.5)),
+      diag  = list(continuous = GGally::wrap("densityDiag")),
+      upper = list(continuous = GGally::wrap("cor", size = 4))
+    ) +
+    report_theme()
+}
+
 # Faceted boxplots comparing each numeric predictor across Pass/Fail.
 plot_num_by_status <- function(df, num_vars) {
   df %>%

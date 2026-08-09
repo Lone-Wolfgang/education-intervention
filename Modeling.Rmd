@@ -27,6 +27,8 @@ source("R/model.R")
 source("R/tune.R")
 source("R/eval.R")
 source("R/eval_plots.R")
+source("R/importance.R")
+source("R/ensemble.R")
 source("R/tables.R")
 source("R/theme.R")
 
@@ -76,7 +78,7 @@ val_df   <- apply_preprocessor(prep_params, splits$val)
 test_df  <- apply_preprocessor(prep_params, splits$test)
 ```
 
-# 5. Model Specs & Hyperparameter Search Spaces
+# 5. Define the Search Space
 
 Each model provides a `fit_fn(train_df, ...hyperparams)`; models with a
 `search_space` are tuned via stratified 5-fold CV on train (`cv_grid_search()`),
@@ -131,7 +133,7 @@ model_specs <- list(
 )
 ```
 
-# 6. Select Hyperparameters via 5-Fold CV, Fit Final Model on Train
+# 6. Hyperparameter Tuning (CV Grid Search)
 
 For each model with a `search_space`, hyperparameters are selected by
 stratified 5-fold CV on `splits$train` (raw/unscaled — `cv_grid_search()`
@@ -146,6 +148,7 @@ object, so it can't share the generic `fit_fn`/`predict_fn` interface).
 fitted_models <- list()
 val_probs <- list()
 best_hp <- list()
+cv_grids <- list()
 
 for (name in names(model_specs)) {
   spec <- model_specs[[name]]
@@ -155,6 +158,7 @@ for (name in names(model_specs)) {
   } else {
     cv <- cv_grid_search(splits$train, num_vars, cat_vars, spec$fit_fn,
                           predict_fn, spec$search_space, k = 5, seed = 42)
+    cv_grids[[name]] <- cv
     best_row <- cv[cv$best, , drop = FALSE][1, ]
     hp <- as.list(best_row[names(spec$search_space)])
     best_hp[[name]] <- hp
@@ -178,10 +182,64 @@ actual_val <- as.integer(val_df$Status == "Fail")
 
 k_grid <- c(3, 5, 7, 9, 11, 15)
 knn_cv <- cv_select_knn_k(splits$train, num_vars, cat_vars, k_grid, folds = 5, seed = 42)
+cv_grids$knn <- knn_cv
 best_k <- knn_cv$k[knn_cv$best][1]
 best_hp$knn <- list(k = best_k)
 
 val_probs$knn <- knn_probs(train_df, val_df, num_vars, cat_vars, best_k)
+```
+
+## Hyperparameter Tuning Plots
+
+Parallel-coordinates plot of each tuned model's CV grid (`cv_grids`,
+captured during fitting above) — one axis per hyperparameter plus
+`mean_auc` — via `plot_cv_grid()` in `R/eval_plots.R`. Scales to any
+number of hyperparameters (unlike a 2D heatmap), so it still works if
+`rf`/`xgboost`/others grow beyond 2 tuned params.
+
+```{r plot-cv-grids, fig.width=7, fig.height=5}
+purrr::walk(names(cv_grids), function(name) {
+  p <- plot_cv_grid(cv_grids[[name]], title = paste0("Hyperparameter Tuning — ", name))
+  print(p)
+})
+```
+
+# 7. Feature Importance (tree, rf, xgboost)
+
+Only models with a native/built-in importance metric are shown here —
+see `get_feature_importance()` in `R/importance.R`. `qda`/`knn` have no
+single importance score, and the coefficient-based models (logistic,
+logistic_complex, lda, glmnet) are already covered by `table_coef()` in
+`R/tables.R`.
+
+```{r plot-feature-importance, fig.width=7, fig.height=5}
+importance_models <- c("tree", "rf", "xgboost")
+purrr::walk(importance_models, function(name) {
+  imp <- get_feature_importance(fitted_models[[name]])
+  p <- plot_feature_importance(imp, title = paste0("Feature Importance — ", name))
+  print(p)
+})
+```
+
+# 8. Tune Threshold
+
+## Ensemble (Mean Pool)
+
+Simplest possible ensemble: mean-pool every model's predicted probability
+per row (`ensemble_probs()` in `R/ensemble.R`), treat that pooled
+probability like any other model's `probs` vector, and threshold-tune it
+the same way (`optimal_threshold()`) — no separate meta-model, no weighting.
+`ensemble_pruned` applies one basic pruning step first: rank models by
+validation AUC (`prune_by_auc()`) and pool only the top 5, so a couple of
+weak models can't drag down the pooled probability.
+
+```{r ensemble}
+base_val_probs <- val_probs
+val_probs$ensemble <- ensemble_probs(base_val_probs)
+
+pruned_names <- prune_by_auc(base_val_probs, actual_val, top_n = 5)
+pruned_names
+val_probs$ensemble_pruned <- ensemble_probs(base_val_probs[pruned_names])
 ```
 
 ## Validation Performance (all models, default 0.5 threshold)
@@ -195,12 +253,12 @@ val_comparison <- compare_models(val_probs, actual_val)
 table_model_comparison(val_comparison)
 ```
 
-# 7. Decision-Threshold Tuning (Validation Set)
+## Decision-Threshold Tuning (Validation Set)
 
 Per-model F1-optimal threshold, chosen on validation only.
 
 ```{r threshold-tuning}
-thresholds <- purrr::map_dbl(val_probs, ~ optimal_threshold(.x, actual_val, metric = "youdens_j"))
+thresholds <- purrr::map_dbl(val_probs, ~ optimal_threshold(.x, actual_val, metric = "f1"))
 thresholds
 ```
 
@@ -218,18 +276,33 @@ purrr::walk(names(val_probs), function(name) {
 })
 ```
 
-# 8. Evaluate All Models on Test (Optimal Thresholds)
+# 9. ROC Curves — All Models
 
 ```{r test-probs}
 test_probs <- purrr::imap(fitted_models, function(model, name) predict_fn(model, test_df))
 test_probs$knn <- knn_probs(train_df, test_df, num_vars, cat_vars, best_k)
 
+base_test_probs <- test_probs
+test_probs$ensemble <- ensemble_probs(base_test_probs)
+test_probs$ensemble_pruned <- ensemble_probs(base_test_probs[pruned_names])
+
 actual_test <- as.integer(test_df$Status == "Fail")
+```
+
+```{r roc-all, fig.height=7}
+plot_roc(test_probs, actual_test)
+```
+
+# 10. Final Evaluation
+
+## Evaluate All Models on Test (Optimal Thresholds)
+
+```{r test-comparison}
 test_comparison <- compare_models(test_probs, actual_test, thresholds = thresholds)
 table_model_comparison(test_comparison)
 ```
 
-# 9. Confusion Matrix — Best Model
+## Confusion Matrix — Best Model
 
 ```{r best-model-cm}
 best_name <- test_comparison$model[which.max(test_comparison$f1)]
@@ -239,10 +312,4 @@ best_eval <- evaluate_predictions(test_probs[[best_name]], actual_test, threshol
 plot_confusion_matrix(best_eval$confusion_matrix,
                        title = paste0("Confusion Matrix — ", best_name,
                                        " (threshold = ", round(best_threshold, 2), ")"))
-```
-
-# 10. ROC Curves — All Models
-
-```{r roc-all, fig.height=7}
-plot_roc(test_probs, actual_test)
 ```
