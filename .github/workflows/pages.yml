@@ -1,4 +1,4 @@
-name: Deploy EDA & Modeling to GitHub Pages
+name: Deploy EDA, Modeling, and Interpretation to GitHub Pages
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
           install.packages(c(
             "tidyverse", "GGally", "gt", "scales", "pROC",
             "patchwork", "broom", "rmarkdown", "knitr", "ggthemes",
-            "glmnet", "randomForest", "xgboost", "rpart"
+            "glmnet", "randomForest", "xgboost", "rpart", "car"
           ))
         shell: Rscript {0}
 
@@ -40,6 +40,7 @@ jobs:
           mkdir -p site_src
           cp EDA.Rmd site_src/index.Rmd
           cp Modeling.Rmd site_src/Modeling.Rmd
+          cp Interpretation.Rmd site_src/Interpretation.Rmd
           cp -r R site_src/R
           cp StudentPerformanceFactors.csv site_src/StudentPerformanceFactors.csv
           cat > site_src/_site.yml << 'EOF'
@@ -52,9 +53,11 @@ jobs:
                 href: index.html
               - text: "Modeling"
                 href: Modeling.html
+              - text: "Interpretation"
+                href: Interpretation.html
           EOF
 
-      - name: Render site (EDA + Modeling tabs)
+      - name: Render site (EDA, Modeling, and Interpretation tabs)
         working-directory: site_src
         run: rmarkdown::render_site()
         shell: Rscript {0}
