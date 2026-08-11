@@ -73,6 +73,7 @@ component — rather than a single coefficient. The remaining categorical
 predictors contribute one coefficient per non-reference level (standard
 dummy coding).\
 \
+
 # 3. Additive Logistic Model (Objective 1)
 ```{r}
 fit <- fit_logistic(splits$train, num_vars, cat_vars)
