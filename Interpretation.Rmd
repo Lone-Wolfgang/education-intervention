@@ -162,7 +162,7 @@ newdata_extra2 %>% dplyr::select(Extracurricular_Activities, predicted_prob_fail
 ```
 
 # 8. Interpretation (Coefficient / Odds Ratio / Confidence Intervals)
-\
+
 **Hours_Studied:**\
 \
 Holding all other predictors constant, each additional hour studied is associated with a decrease in the log-odds of failing by 1.82, a highly statistically significant effect (p < 0.001). Converting to an odds ratio, this corresponds to the odds of failing multiplying by a factor of 0.16 (95% CI: 0.11–0.24) for each additional hour studied. In other words, as study time increases, it results in a large, statistically significant reduction in the odds of failing.\
@@ -170,10 +170,10 @@ Holding all other predictors constant, each additional hour studied is associate
 **Extracurricular_Activities:**\
 \
 Holding all other predictors constant, students who participate in extracurricular activities have an odds of failing approximately 0.10 times (95% CI: 0.04–0.24) those of students who do not participate. This is equivalent to a decrease in the log-odds of failing by a factor of 2.29, and it is a highly statistically significant effect (p < 0.001).\
-\
-\
+
+
 # 9. Practical vs Statistical Significance
-\
+
 **Hours_Studied:**\
 \
 While the statistical significance of this effect is clear, its practical magnitude raises a cause for concern. The effects plot shows an unusually sharp transition in predicted failure probability — near-certain failure below roughly 5 hours studied, collapsing to near-certain passing at above roughly 10 hours studied, with the entire shift occurring in a narrow window.\ 
@@ -183,8 +183,7 @@ A relationship this deterministic is unlikely to translate in the real world. It
 \
 To assess practical significance of Extracurricular_Activities, we evaluated predicted failure probability for a student in a borderline study-time range (6 hours studied — near the model's steepest risk transition), since at typical study levels the predicted risk of failing is already near zero for all students regardless of extracurricular participation.\ 
 At this borderline point, predicted probability of failing drops from 84.3% (95% CI: 53.3%–96.2%) for non-participants to 35.1% (95% CI: 11.6%–69.0%) for participants — a roughly 49-percentage-point reduction. This is a substantial, practically meaningful effect, particularly for students already at elevated risk based on study time. The relatively wide confidence intervals reflect genuine uncertainty in this estimate, since few observations fall within this narrow, high-risk band of the data. This would be a limitation worth acknowledging rather than obscuring.\
-\
-\
+
 # 10. LDA / QDA Assumptions
 ```{r}
 # Visual Check (Distributions of Numeric Variables)
@@ -211,13 +210,24 @@ levene_results <- map_dfr(num_vars, function(v) {
 
 levene_results
 ```
-\
+
 # Write Up:
-\
+
 LDA and QDA both assume that predictor variables are approximately normally distributed within each class. LDA additionally assumes the covariance structure of the predictors is equal across classes (QDA is more relaxed on this second assumption).\
 \
 **Normality:** Of our 19 total predictors, 13 are categorical and cannot satisfy a normality assumption by definition. Among the 6 numeric predictors, visual inspection of within-class density plots shows mixed results: `Physical_Activity`, `Sleep_Hours`, and `Tutoring_Sessions` are discrete count variables with multimodal, spiky distributions that are clearly non-normal. `Attendance` and `Previous_Scores` show skewed, non-bell-shaped distributions that differ in shape between classes. `Hours_Studied` is the best-behaved of the six, showing an approximately unimodal, roughly symmetric distribution in both classes, though it does display a mild right skew.\
 \
 **Equal covariance (LDA-specific):** Levene's test, run separately on each numeric predictor, shows the equal-variance assumption is violated for several key variables. `Attendance` shows an extreme difference in variance between the Fail and Pass classes (F = 250.0, p < 0.001), with `Tutoring_Sessions` (F = 17.0, p < 0.001) and `Hours_Studied` (F = 12.8, p < 0.001) also showing significant, though more modest, violations. `Sleep_Hours`, `Physical_Activity`, and `Previous_Scores` do not show statistically significant differences in variance between classes. Overall, the equal-covariance assumption required by LDA appears violated for roughly half of the numeric predictors, most severely for `Attendance` which is one of the model's strongest predictors. These results are suggesting that LDA's core assumption is not well-supported with this data.\
 \
-**Conclusion:** Both the normality and equal-covariance assumptions appear substantially violated in this dataset, primarily driven by the large number of categorical predictors, and further supported by the skewed/discrete shapes and unequal spread among the numeric predictors. Given QDA doesn't assume equal-covariance, we might reasonably expect it to outperform LDA here. However, both models' core normality assumption remains questionable given the predominance of categorical predictors, so results from either should be interpreted cautiously relative to models that don't carry these distributional assumptions.
+**Conclusion:** Both the normality and equal-covariance assumptions appear substantially violated in this dataset, primarily driven by the large number of categorical predictors, and further supported by the skewed/discrete shapes and unequal spread among the numeric predictors. Given QDA doesn't assume equal-covariance, we might reasonably expect it to outperform LDA here. However, both models' core normality assumption remains questionable given the predominance of categorical predictors, so results from either should be interpreted cautiously relative to models that don't carry these distributional assumptions.\
+\
+
+# Scope and Logistical Considerations
+
+**Assumptions about future data:** This model assumes that future students are drawn from a population similar to the one used for training — same school district, similar demographic and socioeconomic composition, and a similar underlying relationship between these predictors and academic performance. It also assumes the definition of "failing" stays consistent at a fixed exam score cutoff of 63. If the assessment itself changes, or if the school's definition of at-risk shifts, the model would need to be re-calibrated rather than applied as-is. Because Fail cases made up only 8.8% of our training data, the model has relatively few real examples of what is considered "underperforming", so predictions should be treated with more caution for students whose profiles fall outside the range commonly seen in the training data.\
+\
+**Model Instability from Class Balance:** As discussed in the Practical vs. Statistical Significance sections above, several coefficients in this model — particularly `Hours_Studied` — show clear signs of separation, likely a consequence of how rare Fail cases are even after threshold-tuning. This means the model can be overconfident in narrow bands of the predictor space (e.g., predicting near-0% or near-100% failure probability for students just below or above a study-time threshold). In practice, predictions near these extreme probability regions should be treated as directional signals rather than precise risk scores.\
+\
+**Threshold sensitivity and the cost of errors:** This model feeds into a real intervention decision with asymmetric costs. Regarding the business case guiding this project, a missed at-risk student (false negative) costs approximately 50,000 dollars, while an unnecessary intervention (false positive) costs about 10,000 dollars — a 5:1 cost ratio. This means the decision threshold should be deliberately tuned toward higher Sensitivity, even at the expense of more false positives, rather than optimized for a "balanced" metric like overall accuracy. Any deployment of this model should revisit the threshold if these cost assumptions change (e.g., if intervention costs rise, or if the number of available intervention slots is constrained).\
+\
+**Practical deployment concerns:** Since the school appears to be identifying a fixed proportion of students (the "bottom 10%") for intervention, this model would need periodic re-validation as new cohorts of students are assessed. Student populations, course rigor, or grading practices could all shift over time in ways that change what an exam score of 63 actually represents. We'd also recommend monitoring the model's predicted Fail rate against the actual observed Fail rate each term, to catch any drift early rather than assuming the original training-time relationships continue to hold indefinitely.
