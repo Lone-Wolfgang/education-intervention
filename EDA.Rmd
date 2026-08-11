@@ -191,6 +191,13 @@ plot_correlation(df, num_vars)
 plot_num_pairs(df, num_vars)
 ```
 
+**NOTE:** We considered applying PCA to the numeric predictors, but the correlation
+analysis above shows negligible pairwise correlation among all six numeric
+variables (all |r| < 0.03). Since PCA's value comes from compressing
+correlated, redundant information into fewer components, and our predictors
+show minimal redundancy, we determined PCA would not meaningfully reduce
+dimensionality or add value here, and chose not to pursue it further.
+
 # 9. Logistic Regression
 
 Model **P(Fail)**; positive coefficients raise failure risk. `Exam_Score` is
@@ -224,6 +231,6 @@ table_fit_quality(fit)
 top_num <- smd$variable[1]
 top_cat <- chi_res$variable[1]
 cat(sprintf(
-"- Class balance: %.1f%% fail (failing is the majority class here).\n- Strongest numeric signal: **%s**.\n- Strongest categorical signal: **%s**.\n- Missingness was light (three categoricals, ~1%%) and mode-imputed.\n- `Exam_Score` must stay out of any predictive model.\n- Because attendance and study hours dominate, an intervention model should probably weight those over the socioeconomic factors.\n",
+"- Class balance: %.1f%% fail (failing is the minority class here).\n- Strongest numeric signal: **%s**.\n- Strongest categorical signal: **%s**.\n- Missingness was light (three categoricals, ~1%%) and mode-imputed.\n- `Exam_Score` must stay out of any predictive model.\n- Because attendance and study hours dominate, an intervention model should probably weight those over the socioeconomic factors.\n",
 100 * mean(df$Status == "Fail"), top_num, top_cat))
 ```
