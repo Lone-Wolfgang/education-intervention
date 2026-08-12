@@ -143,7 +143,7 @@ plot_feature_importance <- function(importance_df, top_n = NULL,
 # combination (`best == TRUE`) is drawn in the "high" accent color, all
 # other combinations in muted grey.
 plot_cv_grid <- function(cv_result, title = "Hyperparameter Tuning") {
-  hp_cols <- setdiff(names(cv_result), "best")
+  hp_cols <- setdiff(names(cv_result), c("best", "sd_auc", "se_auc"))
   hp_only_cols <- setdiff(hp_cols, "mean_auc")
   best_row <- cv_result[cv_result$best, , drop = FALSE][1, ]
 
@@ -159,7 +159,8 @@ plot_cv_grid <- function(cv_result, title = "Hyperparameter Tuning") {
     report_theme()
 
   tbl_gt <- best_row[, hp_only_cols, drop = FALSE] %>%
-    dplyr::mutate(`Mean AUC` = sprintf("%.3f", best_row$mean_auc)) %>%
+    dplyr::mutate(`Mean AUC` = sprintf("%.3f (SD %.3f)", best_row$mean_auc,
+                                       best_row$sd_auc)) %>%
     gt::gt() %>%
     gt::tab_header(title = "Winning Configuration") %>%
     gt::tab_options(table.font.size          = gt::px(16),
@@ -178,4 +179,29 @@ plot_cv_grid <- function(cv_result, title = "Hyperparameter Tuning") {
       title = title,
       theme = ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5, size = 16, face = "bold"))
     )
+}
+
+# Tuning curve for a one-dimensional CV grid (`knn`'s k, `glmnet`'s alpha):
+# mean CV AUC against the hyperparameter with +/- 1 SE error bars across folds,
+# the selected value marked, and a dashed line at
+# max(mean_auc) - se(best) — every configuration above that line is within one
+# standard error of the winner, i.e. statistically indistinguishable from it.
+# Parallel coordinates (plot_cv_grid) waste a whole axis on a single
+# hyperparameter and hide the shape of the curve; this shows it.
+plot_cv_curve <- function(cv_result, param, title = "Hyperparameter Tuning") {
+  best <- cv_result[cv_result$best, , drop = FALSE][1, ]
+  one_se <- best$mean_auc - best$se_auc
+
+  ggplot2::ggplot(cv_result, ggplot2::aes(x = .data[[param]], y = mean_auc)) +
+    ggplot2::geom_hline(yintercept = one_se, linetype = "dashed", color = "grey50") +
+    ggplot2::geom_errorbar(ggplot2::aes(ymin = mean_auc - se_auc, ymax = mean_auc + se_auc),
+                           width = 0, color = "grey60") +
+    ggplot2::geom_line(color = pal_sequential[["high"]], linewidth = 0.8) +
+    ggplot2::geom_point(color = pal_sequential[["high"]], size = 2.5) +
+    ggplot2::geom_point(data = best, color = pal_binary[[2]], size = 4) +
+    ggplot2::labs(title = title,
+                  subtitle = sprintf("Best %s = %s (mean AUC %.4f); dashed line = one SE below the best",
+                                     param, format(best[[param]], trim = TRUE), best$mean_auc),
+                  x = param, y = "Mean CV AUC (+/- 1 SE)") +
+    report_theme()
 }

@@ -7,8 +7,10 @@
 # and scores it on the fold-held-out rows with AUC using
 # `predict_fn(model, fold_val)` (must return predicted probability of the
 # positive class). Returns a data frame with one column per hyperparameter,
-# a `mean_auc` column (averaged across the k folds), and a `best` flag (TRUE
-# for the row(s) with the highest mean_auc).
+# `mean_auc` / `sd_auc` / `se_auc` across the k folds, and a `best` flag (TRUE
+# for the row(s) with the highest mean_auc). The spread columns matter as much
+# as the mean: two configurations whose mean AUCs differ by less than a
+# standard error are not meaningfully different.
 cv_grid_search <- function(train_raw, num_vars, cat_vars, fit_fn, predict_fn,
                             search_space, k = 5, seed = NULL,
                             target = "Status", positive = "Fail") {
@@ -16,6 +18,7 @@ cv_grid_search <- function(train_raw, num_vars, cat_vars, fit_fn, predict_fn,
   fold <- make_cv_folds(train_raw, k = k, strata = target, seed = seed)
 
   mean_auc <- numeric(nrow(grid))
+  sd_auc   <- numeric(nrow(grid))
   for (i in seq_len(nrow(grid))) {
     params <- as.list(grid[i, , drop = FALSE])
 
@@ -35,9 +38,12 @@ cv_grid_search <- function(train_raw, num_vars, cat_vars, fit_fn, predict_fn,
     }
 
     mean_auc[i] <- mean(fold_auc)
+    sd_auc[i]   <- stats::sd(fold_auc)
   }
 
   grid$mean_auc <- mean_auc
+  grid$sd_auc   <- sd_auc
+  grid$se_auc   <- sd_auc / sqrt(k)
   grid$best <- grid$mean_auc == max(grid$mean_auc)
   grid
 }
@@ -46,13 +52,14 @@ cv_grid_search <- function(train_raw, num_vars, cat_vars, fit_fn, predict_fn,
 # object and so can't share the generic fit_fn/predict_fn interface. Same
 # stratified k-fold / per-fold-refit-preprocessing procedure, but scores
 # each `k` in `k_grid` via `knn_probs()`. Returns a data frame with columns
-# `k`, `mean_auc`, and a `best` flag (TRUE for the row(s) with the highest
-# mean_auc).
+# `k`, `mean_auc`, `sd_auc`, `se_auc`, and a `best` flag (TRUE for the row(s)
+# with the highest mean_auc).
 cv_select_knn_k <- function(train_raw, num_vars, cat_vars, k_grid, folds = 5,
                              seed = NULL, target = "Status", positive = "Fail") {
   fold <- make_cv_folds(train_raw, k = folds, strata = target, seed = seed)
 
   mean_auc <- numeric(length(k_grid))
+  sd_auc   <- numeric(length(k_grid))
   for (i in seq_along(k_grid)) {
     kk <- k_grid[i]
 
@@ -71,11 +78,31 @@ cv_select_knn_k <- function(train_raw, num_vars, cat_vars, k_grid, folds = 5,
     }
 
     mean_auc[i] <- mean(fold_auc)
+    sd_auc[i]   <- stats::sd(fold_auc)
   }
 
-  result <- data.frame(k = k_grid, mean_auc = mean_auc)
+  result <- data.frame(k = k_grid, mean_auc = mean_auc, sd_auc = sd_auc,
+                       se_auc = sd_auc / sqrt(folds))
   result$best <- result$mean_auc == max(result$mean_auc)
   result
+}
+
+# Collapse a named list of CV grids (one per tuned model) into one row per
+# model: the winning hyperparameter combination as a single label, how many
+# configurations were searched, and the winner's mean CV AUC and fold-to-fold
+# SD.
+cv_best_summary <- function(cv_grids) {
+  purrr::imap_dfr(cv_grids, function(cv, name) {
+    best   <- cv[cv$best, , drop = FALSE][1, ]
+    hp     <- setdiff(names(cv), c("mean_auc", "sd_auc", "se_auc", "best"))
+    labels <- sprintf("%s = %s", hp, sapply(best[hp], format, trim = TRUE))
+
+    tibble::tibble(model = name,
+                   n_configs = nrow(cv),
+                   hyperparameters = paste(labels, collapse = ", "),
+                   mean_auc = best$mean_auc,
+                   sd_auc   = best$sd_auc)
+  })
 }
 
 # Sweep `thresholds` and return the one that maximizes `metric` ("f1" or

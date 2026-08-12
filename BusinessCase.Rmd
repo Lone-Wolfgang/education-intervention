@@ -1,0 +1,217 @@
+---
+title: "Student Performance Factors — Business Case"
+author: "Wolf & Avery"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 5)
+
+library(tidyverse)
+library(gt)
+library(scales)
+
+source("R/load.R")
+source("R/preprocess.R")
+source("R/missingness.R")
+source("R/split.R")
+source("R/model.R")
+source("R/tune.R")
+source("R/eval.R")
+source("R/eval_plots.R")
+source("R/business.R")
+source("R/tables.R")
+source("R/theme.R")
+
+ggplot2::theme_set(report_theme())
+```
+
+`Modeling.Rmd` compared eight model families on the test split; the additive
+logistic regression came out on top (highest AUC and F1). This notebook takes
+that one model and answers the question the model comparison could not: **is
+running an intervention program on its predictions worth the money?**
+
+# 1. Cost Assumptions
+
+Everything downstream is driven by two numbers, and both are parameters — edit
+them here to re-run the entire business case under different assumptions.
+
+```{r cost-params}
+INTERVENTION_COST <- 1000   # spent on every student we flag (TP and FP alike)
+NO_ACTION_COST    <- 5000   # what a failure costs when nobody intervenes (FN)
+```
+
+The intervention is assumed to work: a flagged student who would have failed
+does not. So a true positive converts a `r dollar(NO_ACTION_COST)` failure into
+a `r dollar(INTERVENTION_COST)` intervention, netting
+`r dollar(NO_ACTION_COST - INTERVENTION_COST)`. A false positive is a wasted
+`r dollar(INTERVENTION_COST)`. A false negative eats the full
+`r dollar(NO_ACTION_COST)`: the student fails and nothing was spent trying to
+stop it. A true negative is free.
+
+A miss is charged as a real `r dollar(-NO_ACTION_COST)` rather than treated as
+neutral. Against a strict do-nothing baseline it *is* a wash — that failure was
+going to cost `r dollar(NO_ACTION_COST)` regardless — but scoring it at zero
+makes the most damaging cell on the matrix look costless, which is exactly the
+error the program exists to avoid. The scorecard in section 4 still measures net
+benefit against the do-nothing baseline, so the payoff cells below are the
+per-decision economics, not an addend of that total.
+
+```{r payoff-table}
+table_payoff(payoff_table(INTERVENTION_COST, NO_ACTION_COST),
+             INTERVENTION_COST, NO_ACTION_COST)
+```
+
+```{r payoff-matrix, fig.width=7, fig.height=6}
+plot_payoff_matrix(INTERVENTION_COST, NO_ACTION_COST)
+```
+
+The asymmetry is the whole story: a miss costs
+`r round(NO_ACTION_COST / INTERVENTION_COST)`x what a wasted intervention does,
+so the program should be willing to flag several students who would have passed
+in order to catch one more who would not. A threshold tuned for statistical
+balance does not know that.
+
+# 2. Refit the Winning Model
+
+Same data preparation, same split, same seed as `Modeling.Rmd`: the model is
+fit on **train** only, the threshold is chosen on **validation** only, and
+**test** is touched once, at the end.
+
+```{r fit}
+CUTOFF <- 63
+
+raw  <- load_("StudentPerformanceFactors.csv")
+miss <- count_missing_values(raw)
+df   <- impute_categoricals(raw, miss$variable)
+df   <- add_target_and_factors(df, cutoff = CUTOFF)
+use_linear_contrasts()
+
+num_vars <- select_num_vars(c("Hours_Studied", "Attendance", "Sleep_Hours",
+                             "Previous_Scores", "Tutoring_Sessions",
+                             "Physical_Activity"))
+cat_vars <- select_cat_vars(df)
+
+splits <- split_data(df, c(train = 0.6, val = 0.2, test = 0.2),
+                     strata = "Status", seed = 42)
+
+prep_params <- fit_preprocessor(splits$train, num_vars)
+train_df <- apply_preprocessor(prep_params, splits$train)
+val_df   <- apply_preprocessor(prep_params, splits$val)
+test_df  <- apply_preprocessor(prep_params, splits$test)
+
+fit <- fit_logistic(train_df, num_vars, cat_vars)
+
+val_probs  <- predict_probs(fit, val_df,  num_vars, cat_vars)
+test_probs <- predict_probs(fit, test_df, num_vars, cat_vars)
+actual_val  <- as.integer(val_df$Status  == "Fail")
+actual_test <- as.integer(test_df$Status == "Fail")
+```
+
+# 3. Choose the Decision Rule on Validation
+
+Four candidate rules, all evaluated on the validation set:
+
+| Rule | Threshold from | Optimizes |
+|---|---|---|
+| `argmax` | fixed at 0.5 | nothing — the textbook "predict the more likely class" default |
+| `f1` | tuned on validation | harmonic mean of precision and recall |
+| `youdens_j` | tuned on validation | sensitivity + specificity − 1 |
+| `cost_ratio` | `r dollar(INTERVENTION_COST)` / `r dollar(NO_ACTION_COST)` = `r round(INTERVENTION_COST / NO_ACTION_COST, 3)` | expected cost, from the assumptions alone — flag a student whenever `p x NO_ACTION_COST > INTERVENTION_COST` |
+
+The first three are statistical rules that ignore the cost asymmetry; the
+fourth is derived from it. Whichever produces the highest **validation** net
+benefit is the one carried to test.
+
+```{r rules}
+rules <- threshold_rules(val_probs, actual_val, INTERVENTION_COST, NO_ACTION_COST)
+table_threshold_rules(rules)
+```
+
+```{r rules-curve, fig.width=8, fig.height=5}
+plot_net_benefit_curve(val_probs, actual_val, rules,
+                       INTERVENTION_COST, NO_ACTION_COST)
+```
+
+```{r rule-pick}
+best_rule <- rules$rule[which.max(rules$net_benefit)]
+best_threshold <- rules$threshold[which.max(rules$net_benefit)]
+c(rule = best_rule, threshold = best_threshold)
+```
+
+```{r rule-pick-note, echo=FALSE, results='asis'}
+tied <- rules$rule[rules$net_benefit == max(rules$net_benefit)]
+tie_note <- if (length(tied) > 1) {
+  sprintf(" (%s land on the same threshold and tie exactly; `%s` is taken as the first)",
+          paste(sprintf("`%s`", tied), collapse = " and "), best_rule)
+} else ""
+
+cat(sprintf(
+"The **%s** rule wins on validation with a threshold of **%.3f**%s, worth %s against the %s the do-nothing baseline would cost — %s more than the default 0.5 cut.\n",
+best_rule, best_threshold, tie_note,
+dollar(max(rules$net_benefit)),
+dollar(rules$cost_no_action[1]),
+dollar(max(rules$net_benefit) - rules$net_benefit[rules$rule == "argmax"])))
+```
+
+# 4. Apply to Test
+
+The model and the threshold are both now fixed. This is the only time the test
+set is scored.
+
+```{r test-eval}
+nb_test <- net_benefit(test_probs, actual_test, best_threshold,
+                       INTERVENTION_COST, NO_ACTION_COST)
+nb_test
+```
+
+```{r test-cm, fig.width=7, fig.height=6}
+plot_cost_confusion_matrix(nb_test, INTERVENTION_COST, NO_ACTION_COST,
+                           title = sprintf("Test Set in Dollars — %s rule", best_rule))
+```
+
+```{r test-scorecard}
+table_business_case(nb_test, label = "Test set")
+```
+
+```{r test-waterfall, fig.width=8, fig.height=5}
+plot_business_case(nb_test)
+```
+
+# 5. Bottom Line
+
+```{r bottom-line, echo=FALSE, results='asis'}
+roi <- nb_test$net_benefit / nb_test$investment
+cat(sprintf(
+"- Doing nothing costs **%s** across the %d students in the test set (%d of them fail at %s each).\n- The program flags **%d students** (%.1f%% of the cohort) for a total investment of **%s**.\n- It still misses **%d failures**, a residual loss of **%s**.\n- Total cost with the model is **%s** against **%s** without it: a net benefit of **%s**, or %s per student and %s returned per dollar spent.\n",
+dollar(nb_test$cost_no_action), nb_test$n, nb_test$tp + nb_test$fn, dollar(NO_ACTION_COST),
+nb_test$n_flagged, 100 * nb_test$n_flagged / nb_test$n, dollar(nb_test$investment),
+nb_test$fn, dollar(nb_test$loss),
+dollar(nb_test$total_cost), dollar(nb_test$cost_no_action),
+dollar(nb_test$net_benefit), dollar(nb_test$net_benefit_per_student),
+dollar(roi)))
+```
+
+Two caveats worth stating plainly:
+
+- **The intervention is assumed to be perfectly effective.** Every true
+  positive is credited with averting a failure. If it only works, say, 60% of
+  the time, the value of a true positive falls from
+  `r dollar(NO_ACTION_COST - INTERVENTION_COST)` to
+  `r dollar(0.6 * NO_ACTION_COST - INTERVENTION_COST)` and the case weakens
+  proportionally. Both costs are parameters at the top of this notebook, so
+  that scenario is a one-line edit.
+- **The model is close to separation** (see `EDA.Rmd`, section 12a), so its
+  predicted probabilities are pushed toward 0 and 1 and are more confident than
+  they should be. That mostly affects rules that read the probability scale
+  literally, such as `cost_ratio`; the net-benefit curve above is flat enough
+  across the middle of the range that the exact threshold matters less than the
+  decision to run the program at all.

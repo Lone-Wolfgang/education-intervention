@@ -13,9 +13,8 @@ load_ <- function(path) {
     levels <- c("Low", "Medium", "High"),
     ordered = TRUE
   )
-  df$Motivation_Level <- factor(df$Motivation_Level)
-  df$Access_to_Resources <- factor(
-    df$Access_to_Resources,
+  df$Motivation_Level <- factor(
+    df$Motivation_Level,
     levels <- c("Low", "Medium", "High"),
     ordered = TRUE
   )

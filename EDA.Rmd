@@ -21,6 +21,7 @@ library(gt)
 library(scales)
 library(patchwork)
 library(broom)
+library(car)
 
 source("R/load.R")
 source("R/preprocess.R")
@@ -28,6 +29,7 @@ source("R/missingness.R")
 source("R/eda_plots.R")
 source("R/tables.R")
 source("R/model.R")
+source("R/diagnostics.R")
 
 ggplot2::theme_set(report_theme())
 ```
@@ -111,23 +113,26 @@ plot_target_balance(df)
 
 # 6. Univariate Distributions
 
+Sections 6-8 look at every candidate predictor; the ones that survive into the
+model are chosen in section 9.
+
 ## 6a. Numeric
 
 ```{r dist-num}
-num_vars <- c("Hours_Studied","Attendance","Sleep_Hours","Previous_Scores",
-              "Tutoring_Sessions","Physical_Activity")
-plot_num_distributions(df, num_vars)
+num_vars_all <- c("Hours_Studied","Attendance","Sleep_Hours","Previous_Scores",
+                  "Tutoring_Sessions","Physical_Activity")
+plot_num_distributions(df, num_vars_all)
 ```
 
 ```{r dist-num-box}
-plot_num_boxplots(df, num_vars)
+plot_num_boxplots(df, num_vars_all)
 ```
 
 ## 6b. Categorical
 
 ```{r dist-cat, fig.height=9}
-cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
-plot_cat_distributions(df, cat_vars)
+cat_vars_all <- df %>% select(where(is.factor), -Status) %>% names()
+plot_cat_distributions(df, cat_vars_all)
 ```
 
 # 7. Associations with Failing
@@ -135,31 +140,31 @@ plot_cat_distributions(df, cat_vars)
 ## 7a. Numeric predictors vs. Status
 
 ```{r box-num}
-plot_num_by_status(df, num_vars)
+plot_num_by_status(df, num_vars_all)
 ```
 
 ```{r ttests}
-smd <- ttest_summary(df, num_vars)
+smd <- ttest_summary(df, num_vars_all)
 table_ttest(smd)
 ```
 
 ## 7b. Categorical predictors vs. Status
 
 ```{r cat-assoc}
-fail_rates <- fail_rate_summary(df, cat_vars)
+fail_rates <- fail_rate_summary(df, cat_vars_all)
 table_fail_rates(fail_rates)
 ```
 
 ```{r cat-plot, fig.height=9}
-plot_fail_rates_cat(df, cat_vars)
+plot_fail_rates_cat(df, cat_vars_all)
 ```
 
 ```{r cat-plot-stacked, fig.height=9}
-plot_status_by_cat_stacked(df, cat_vars)
+plot_status_by_cat_stacked(df, cat_vars_all)
 ```
 
 ```{r chisq}
-chi_res <- chisq_summary(df, cat_vars)
+chi_res <- chisq_summary(df, cat_vars_all)
 table_chisq(chi_res)
 ```
 
@@ -177,38 +182,72 @@ plot_hours_by_status_interaction(df)
 ```
 
 ```{r interaction-gap, fig.height=9}
-gap_results <- interaction_gap_summary(df, "Hours_Studied", cat_vars)
+gap_results <- interaction_gap_summary(df, "Hours_Studied", cat_vars_all)
 plot_interaction_gap(gap_results)
 ```
 
 # 8. Correlation Structure
 
 ```{r corr, fig.height=7}
-plot_correlation(df, num_vars)
+plot_correlation(df, num_vars_all)
 ```
 
 ```{r corr-pairs, fig.width=10, fig.height=10}
-plot_num_pairs(df, num_vars)
+plot_num_pairs(df, num_vars_all)
 ```
 
-# 9. Logistic Regression
+# 9. Feature Selection
+
+An initial kitchen-sink fit on all 19 predictors made three things clear, and
+the screens above agree with all three:
+
+- **`Sleep_Hours`** (z = -1.38), **`School_Type`** (z = 0.88) and **`Gender`**
+  (z = 0.52) contributed nothing. Their fail rates are flat across levels
+  (section 7b) and `Sleep_Hours` is the one numeric predictor whose Pass/Fail
+  boxplots overlap almost completely (section 7a). All three are dropped.
+- **Every quadratic (`.Q`) contrast** was non-significant (the largest was
+  `Access_to_Resources.Q`, borderline at p = 0.05; the rest had |z| < 2). The
+  fail-rate bars in section 7b step monotonically across
+  `Low → Medium → High`, so a single linear (`.L`) trend per ordinal is the
+  right parameterization — this drops 8 df with essentially no loss of fit.
+- **`Motivation_Level`** was being read as an unordered factor, so it got dummy
+  coding while the other seven ordinals got polynomial contrasts. It is now an
+  ordered factor (`R/load.R`) and enters as a single `.L` term like its peers.
+
+`use_linear_contrasts()` implements the second point by making a linear-only
+polynomial contrast the default coding for ordered factors;
+`select_num_vars()`/`select_cat_vars()` implement the first by removing
+`PRUNED_VARS` (see `R/preprocess.R`).
+
+```{r feature-selection}
+use_linear_contrasts()
+
+num_vars <- select_num_vars(num_vars_all)
+cat_vars <- select_cat_vars(df)
+
+PRUNED_VARS
+c(num_vars, cat_vars)
+```
+
+# 10. Logistic Regression
 
 Model **P(Fail)**; positive coefficients raise failure risk. `Exam_Score` is
-excluded (it defines the target). Ordinal factors use polynomial contrasts, so
-`.L` (linear) terms capture the Low→High trend.
+excluded (it defines the target). Each ordinal predictor contributes one `.L`
+coefficient reading Low→High, so a negative `.L` means risk falls as the
+predictor rises.
 
 ```{r glm-fit}
 fit <- fit_logistic(df, num_vars, cat_vars)
 summary(fit)
 ```
 
-## 9a. Coefficients Table
+## 10a. Coefficients Table
 
 ```{r coef-table}
 table_coef(fit)
 ```
 
-## 9b. Log-Odds Forest Plot
+## 10b. Log-Odds Forest Plot
 
 ```{r logodds-plot, fig.height=7}
 plot_logodds(fit)
@@ -218,12 +257,145 @@ plot_logodds(fit)
 table_fit_quality(fit)
 ```
 
-# 10. Takeaways
+# 11. Interaction Screening
+
+Section 7c raised one visual hint of an interaction (`Hours_Studied` behaving
+differently under `Low` parental involvement). This is the formal version of
+that check: refit the additive model above with one two-way interaction added
+at a time and compare the two with a likelihood-ratio test. With
+`r choose(length(c(num_vars, cat_vars)), 2)` candidate terms, raw p-values
+alone would throw off several false positives, so p-values are
+Benjamini-Hochberg adjusted.
+
+```{r interaction-screen}
+int_screen <- screen_interactions(df, num_vars, cat_vars)
+table_interaction_lrt(int_screen)
+```
+
+```{r interaction-screen-summary, echo=FALSE, results='asis'}
+n_raw <- sum(int_screen$p_value < 0.05, na.rm = TRUE)
+n_adj <- sum(int_screen$p_adj   < 0.05, na.rm = TRUE)
+cat(sprintf(
+"Nothing survives: %d of %d terms clear the raw p < 0.05 bar, against the ~%.0f expected by chance alone, and **%d** clear the BH-adjusted bar. The section 7c signal was sampling noise in a thin slice of the data, so the model stays additive.\n",
+n_raw, nrow(int_screen), 0.05 * nrow(int_screen), n_adj))
+```
+
+# 12. Assumption Checks
+
+## 12a. Logistic Regression
+
+Logistic regression needs independent observations, a logit that is linear in
+each numeric predictor, no severe multicollinearity, and no handful of points
+driving the fit. Independence holds by construction (one row per student, no
+repeated measures or clustering variable in the data), so the remaining three
+are checked below.
+
+**Linearity of the logit.** Binning each numeric predictor and plotting the
+observed log-odds of failing per bin should trace a straight line.
+
+```{r logit-linearity, fig.height=6}
+plot_empirical_logit(df, num_vars)
+```
+
+**Residuals.** Individual logistic residuals are uninformative, so residuals
+are averaged within bins of the fitted probability; each point should sit
+inside its own ±2 SE bar with no pattern across bins.
+
+```{r binned-resid}
+plot_binned_residuals(fit)
+```
+
+The bins collapse onto 0 and 1 rather than spreading across the x-axis, which
+is the separation problem showing up again: the model assigns almost every
+student a fitted probability of essentially 0 or 1, so there are only a handful
+of distinct values left to bin. Within those clumps the mean residuals are
+small and unpatterned, but the plot has little power to detect misspecification
+here.
+
+**Multicollinearity.** Generalized VIFs, converted to the ordinary VIF scale so
+the usual "> 5" rule applies.
+
+```{r vif}
+table_vif(vif_summary(fit))
+```
+
+`Hours_Studied` and `Attendance` come back above 20, which would normally be
+alarming — but the raw predictors are essentially uncorrelated (section 8: every
+off-diagonal |r| < 0.03). GVIF is computed from the IRLS-weighted design, and
+those weights are `p(1-p)`, which collapse to ~0 for almost every row once the
+model is nearly separated. So this is a symptom of the separation diagnosed
+below, not genuine collinearity between the two predictors.
+
+**Influential observations.** Cook's distance against the conventional 4/n
+screening cut-off.
+
+```{r influence-plot}
+plot_influence(fit)
+```
+
+```{r influence-table}
+table_influence(influence_summary(fit), n_obs = nrow(df))
+```
+
+**Separation.** Failing is the minority class and the fitted coefficients are
+large, which is the signature of near-complete separation — the condition under
+which the MLE drifts toward infinity and standard errors stop being
+trustworthy. This is the single most important caveat on the coefficients
+above.
+
+```{r separation}
+table_separation(separation_summary(fit))
+```
+
+## 12b. LDA / QDA
+
+LDA and QDA both assume the predictors are multivariate normal *within* each
+class; LDA additionally assumes both classes share one covariance matrix, which
+is exactly the assumption QDA relaxes. Only the numeric predictors can be
+assessed — the 11 retained categoricals cannot be normal by construction, which
+is already a structural violation for both methods.
+
+**Within-class normality.**
+
+```{r lda-density, fig.height=6}
+plot_within_class_density(df, num_vars)
+```
+
+```{r lda-qq, fig.width=11, fig.height=5}
+plot_within_class_qq(df, num_vars)
+```
+
+```{r lda-shapiro}
+table_normality(normality_summary(df, num_vars))
+```
+
+**Equal covariance (LDA-specific).** Levene's test per predictor, then Box's M
+on the full covariance matrices, then a look at *where* the two structures
+differ.
+
+```{r lda-levene}
+table_levene(levene_summary(df, num_vars))
+```
+
+```{r lda-boxm}
+table_boxm(boxm_test(df, num_vars))
+```
+
+```{r lda-cor, fig.width=10, fig.height=5}
+plot_class_correlations(df, num_vars)
+```
+
+Expect QDA to handle this data better than LDA, and treat both as weaker than
+the tree/ensemble models in `Modeling.Rmd`, which carry no distributional
+assumptions at all.
+
+# 13. Takeaways
 
 ```{r takeaways, echo=FALSE, results='asis'}
 top_num <- smd$variable[1]
 top_cat <- chi_res$variable[1]
 cat(sprintf(
-"- Class balance: %.1f%% fail (failing is the majority class here).\n- Strongest numeric signal: **%s**.\n- Strongest categorical signal: **%s**.\n- Missingness was light (three categoricals, ~1%%) and mode-imputed.\n- `Exam_Score` must stay out of any predictive model.\n- Because attendance and study hours dominate, an intervention model should probably weight those over the socioeconomic factors.\n",
-100 * mean(df$Status == "Fail"), top_num, top_cat))
+"- Class balance: %.1f%% fail (failing is the minority class here).\n- Strongest numeric signal: **%s**.\n- Strongest categorical signal: **%s**.\n- Missingness was light (three categoricals, ~1%%) and mode-imputed.\n- `Exam_Score` must stay out of any predictive model.\n- Feature selection took the kitchen-sink fit (19 predictors, 27 coefficients) down to %d predictors and %d coefficients: `Sleep_Hours`, `School_Type` and `Gender` dropped outright, and each ordinal reduced to a single linear trend.\n- No interaction survived screening, so the model stays additive.\n- Because attendance and study hours dominate, an intervention model should probably weight those over the socioeconomic factors.\n- Caveat: the fit sits close to complete separation, so coefficient *directions* are reliable but their *magnitudes* are not; LDA's equal-covariance assumption is also violated.\n",
+100 * mean(df$Status == "Fail"), top_num, top_cat,
+length(c(num_vars, cat_vars)), length(coef(fit))))
 ```

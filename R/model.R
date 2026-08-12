@@ -18,6 +18,34 @@ fit_logistic_complex <- function(df, num_vars, cat_vars, interactions) {
   glm(stats::as.formula(paste("Fail ~", rhs)), data = model_df, family = binomial)
 }
 
+# Screen every two-way interaction among the given predictors: refit the
+# additive model with one interaction added at a time and compare it to the
+# additive baseline with a likelihood-ratio test. Returns one row per candidate
+# term with its added df, LRT statistic, raw p-value, and a Benjamini-Hochberg
+# adjusted p-value (136 tests on the pruned predictor set, so the raw p-values
+# need a multiplicity correction before anything is called "significant").
+# Terms whose model fails to converge or is rank-deficient are returned with
+# NA statistics rather than dropped.
+screen_interactions <- function(df, num_vars, cat_vars) {
+  vars  <- c(num_vars, cat_vars)
+  base  <- fit_logistic(df, num_vars, cat_vars)
+  pairs <- utils::combn(vars, 2, simplify = FALSE)
+
+  purrr::map_dfr(pairs, function(pair) {
+    term <- paste(pair, collapse = ":")
+    res  <- tryCatch({
+      alt <- suppressWarnings(fit_logistic_complex(df, num_vars, cat_vars, term))
+      cmp <- stats::anova(base, alt, test = "LRT")
+      list(df = cmp$Df[2], stat = cmp$Deviance[2], p = cmp$`Pr(>Chi)`[2])
+    }, error = function(e) list(df = NA_integer_, stat = NA_real_, p = NA_real_))
+
+    tibble::tibble(term = term, added_df = res$df,
+                   lrt = res$stat, p_value = res$p)
+  }) %>%
+    dplyr::mutate(p_adj = stats::p.adjust(p_value, method = "BH")) %>%
+    dplyr::arrange(p_value)
+}
+
 # Fit LDA of Fail on the given numeric and categorical predictors;
 # returns the MASS::lda object.
 fit_lda <- function(df, num_vars, cat_vars) {

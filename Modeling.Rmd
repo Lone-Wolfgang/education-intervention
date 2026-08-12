@@ -41,7 +41,7 @@ ggplot2::theme_set(report_theme())
 for the threshold-tuning plot used to choose it.
 
 ```{r cutoff-param}
-CUTOFF <- 63
+CUTOFF <- 61
 ```
 
 # 2. Load & Prepare Data
@@ -51,10 +51,22 @@ raw <- load_("StudentPerformanceFactors.csv")
 miss <- count_missing_values(raw)
 df <- impute_categoricals(raw, miss$variable)
 df <- add_target_and_factors(df, cutoff = CUTOFF)
+use_linear_contrasts()
 
-num_vars <- c("Hours_Studied", "Attendance", "Sleep_Hours", "Previous_Scores",
-              "Tutoring_Sessions", "Physical_Activity")
-cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
+num_vars <- select_num_vars(c("Hours_Studied", "Attendance", "Sleep_Hours",
+                             "Previous_Scores", "Tutoring_Sessions",
+                             "Physical_Activity"))
+cat_vars <- select_cat_vars(df)
+```
+
+The predictor set comes from the feature selection in `EDA.Rmd`:
+`PRUNED_VARS` (`Gender`, `School_Type`, `Sleep_Hours`) are removed, and
+`use_linear_contrasts()` codes each ordinal predictor with a single linear
+(`.L`) polynomial contrast — the quadratic terms were uniformly
+non-significant, so every model here gets 8 fewer parameters to fit.
+
+```{r predictors}
+c(num_vars, cat_vars)
 ```
 
 # 3. Train / Validation / Test Split
@@ -85,6 +97,22 @@ Each model provides a `fit_fn(train_df, ...hyperparams)`; models with a
 the rest are fit directly. All models predict through the shared `predict_fn`
 (dispatches on model class via `predict_probs()`).
 
+Two specifications from earlier drafts are gone, both on the strength of what
+`EDA.Rmd` turned up:
+
+- **`logistic_complex`** (the additive model plus
+  `Hours_Studied:Parental_Involvement` and `Hours_Studied:Motivation_Level`).
+  The interaction screen tested every candidate two-way term with a
+  likelihood-ratio test and, after BH adjustment, none survived. Every
+  specification below is additive.
+- **`qda`**. Within-class normality fails for all five numeric predictors
+  (Shapiro-Wilk p < 0.01 in both classes, and three of the five are spiky
+  discrete counts), and QDA has to estimate a separate covariance matrix per
+  class from mostly dummy-coded columns — the assumption violation that hurts
+  it most. `lda` stays as the parametric linear-boundary reference, and the
+  tree/ensemble models cover flexible boundaries without needing a normality
+  assumption.
+
 ```{r model-specs}
 predict_fn <- function(model, d) predict_probs(model, d, num_vars, cat_vars)
 
@@ -93,44 +121,62 @@ model_specs <- list(
     fit_fn = function(train_df) fit_logistic(train_df, num_vars, cat_vars),
     search_space = NULL
   ),
-  logistic_complex = list(
-    fit_fn = function(train_df) {
-      fit_logistic_complex(train_df, num_vars, cat_vars,
-        c("Hours_Studied:Parental_Involvement", "Hours_Studied:Motivation_Level"))
-    },
-    search_space = NULL
-  ),
   lda = list(
     fit_fn = function(train_df) fit_lda(train_df, num_vars, cat_vars),
     search_space = NULL
   ),
-  qda = list(
-    fit_fn = function(train_df) fit_qda(train_df, num_vars, cat_vars),
-    search_space = NULL
-  ),
   glmnet = list(
     fit_fn = function(train_df, alpha) fit_glmnet(train_df, num_vars, cat_vars, alpha = alpha),
-    search_space = list(alpha = c(0, 0.25, 0.5, 0.75, 1))
+    search_space = list(alpha = seq(0, 1, by = 0.1))
   ),
   tree = list(
-    fit_fn = function(train_df, cp) {
-      fit_tree(train_df, num_vars, cat_vars, control = rpart::rpart.control(cp = cp))
+    fit_fn = function(train_df, cp, minsplit, maxdepth) {
+      fit_tree(train_df, num_vars, cat_vars,
+               control = rpart::rpart.control(cp = cp, minsplit = minsplit,
+                                              maxdepth = maxdepth))
     },
-    search_space = list(cp = c(0.001, 0.005, 0.01, 0.05))
+    search_space = list(cp       = c(0.0005, 0.001, 0.005, 0.01, 0.05),
+                        minsplit = c(5, 20, 60),
+                        maxdepth = c(3, 6, 15))
   ),
   rf = list(
-    fit_fn = function(train_df, mtry, ntree) {
-      fit_rf(train_df, num_vars, cat_vars, mtry = mtry, ntree = ntree)
+    fit_fn = function(train_df, mtry, ntree, nodesize) {
+      fit_rf(train_df, num_vars, cat_vars, mtry = mtry, ntree = ntree,
+             nodesize = nodesize)
     },
-    search_space = list(mtry = c(2, 4, 6), ntree = c(200, 400))
+    search_space = list(mtry     = c(2, 4, 6, 9, 13),
+                        ntree    = c(300, 600),
+                        nodesize = c(1, 5, 20))
   ),
   xgboost = list(
-    fit_fn = function(train_df, nrounds, max_depth) {
-      fit_xgboost(train_df, num_vars, cat_vars, nrounds = nrounds, max_depth = max_depth)
+    fit_fn = function(train_df, nrounds, max_depth, eta, subsample,
+                      min_child_weight) {
+      fit_xgboost(train_df, num_vars, cat_vars, nrounds = nrounds,
+                  max_depth = max_depth, eta = eta, subsample = subsample,
+                  min_child_weight = min_child_weight)
     },
-    search_space = list(nrounds = c(50, 100), max_depth = c(3, 6))
+    search_space = list(nrounds          = c(100, 300),
+                        max_depth        = c(2, 4, 6),
+                        eta              = c(0.05, 0.1, 0.3),
+                        subsample        = c(0.7, 1),
+                        min_child_weight = c(1, 5))
   )
 )
+```
+
+The grids are deliberately wide enough to bracket each model's
+under/over-fitting extremes rather than to confirm a default:
+
+| Model | Tuned | Range covers |
+|---|---|---|
+| `glmnet` | `alpha` in 0.1 steps | pure ridge → pure lasso (`lambda` is tuned internally by `cv.glmnet`) |
+| `tree` | `cp`, `minsplit`, `maxdepth` | a 3-split stump → a deep tree pruned only at `cp` = 0.0005 |
+| `rf` | `mtry`, `ntree`, `nodesize` | 2 of 16 predictors per split → 13 of 16; fully grown leaves → leaves of 20 |
+| `xgboost` | `nrounds`, `max_depth`, `eta`, `subsample`, `min_child_weight` | slow shrinkage on shallow stumps → fast shrinkage on depth-6 trees, with and without row subsampling |
+
+```{r grid-sizes}
+sapply(model_specs, function(s) if (is.null(s$search_space)) 0L else
+  nrow(expand.grid(s$search_space)))
 ```
 
 # 6. Hyperparameter Tuning (CV Grid Search)
@@ -143,6 +189,11 @@ used to fit one final model on the full (globally scaled) `train_df`.
 Validation predictions from that final model are kept for threshold tuning
 below. KNN is handled separately (`class::knn` has no persisted model
 object, so it can't share the generic `fit_fn`/`predict_fn` interface).
+
+Each configuration is scored by mean AUC across the five folds, and
+`cv_grid_search()` also returns the fold-to-fold SD, so a winner that only beat
+the field by less than one standard error can be recognized as a tie rather
+than a result.
 
 ```{r fit-and-tune}
 fitted_models <- list()
@@ -180,7 +231,7 @@ then the final model predicts on `val_df` using the full `train_df`.
 ```{r knn}
 actual_val <- as.integer(val_df$Status == "Fail")
 
-k_grid <- c(3, 5, 7, 9, 11, 15)
+k_grid <- c(1, 3, 5, 7, 9, 11, 15, 21, 31, 45, 61, 85)
 knn_cv <- cv_select_knn_k(splits$train, num_vars, cat_vars, k_grid, folds = 5, seed = 42)
 cv_grids$knn <- knn_cv
 best_k <- knn_cv$k[knn_cv$best][1]
@@ -189,16 +240,41 @@ best_hp$knn <- list(k = best_k)
 val_probs$knn <- knn_probs(train_df, val_df, num_vars, cat_vars, best_k)
 ```
 
-## Hyperparameter Tuning Plots
+## Tuning Summary
 
-Parallel-coordinates plot of each tuned model's CV grid (`cv_grids`,
-captured during fitting above) — one axis per hyperparameter plus
-`mean_auc` — via `plot_cv_grid()` in `R/eval_plots.R`. Scales to any
-number of hyperparameters (unlike a 2D heatmap), so it still works if
-`rf`/`xgboost`/others grow beyond 2 tuned params.
+What each search settled on, out of how many configurations, with the
+fold-to-fold SD as a reality check on the AUC.
+
+```{r cv-summary}
+cv_summary <- cv_best_summary(cv_grids)
+table_cv_best(cv_summary)
+```
+
+## Tuning Curves (One-Dimensional Grids)
+
+`glmnet` and KNN tune a single hyperparameter, so the whole search is a curve:
+mean CV AUC with ±1 SE bars, the selection in red, and a dashed line one SE
+below the best. Anything above that line is statistically indistinguishable
+from the winner — which is the useful part, since it shows whether the choice
+actually mattered.
+
+```{r plot-cv-curves, fig.width=8, fig.height=5}
+print(plot_cv_curve(cv_grids$glmnet, "alpha",
+                    title = "Hyperparameter Tuning — glmnet"))
+print(plot_cv_curve(cv_grids$knn, "k",
+                    title = "Hyperparameter Tuning — knn"))
+```
+
+## Tuning Landscapes (Multi-Dimensional Grids)
+
+`tree`, `rf` and `xgboost` tune 3-5 hyperparameters at once, so each
+configuration is drawn as a line across one axis per hyperparameter plus
+`mean_auc` (`plot_cv_grid()` in `R/eval_plots.R`). Parallel coordinates scale to
+any number of hyperparameters, unlike a 2D heatmap, and make it easy to see
+whether the high-AUC lines share a common setting on any one axis.
 
 ```{r plot-cv-grids, fig.width=7, fig.height=5}
-purrr::walk(names(cv_grids), function(name) {
+purrr::walk(c("tree", "rf", "xgboost"), function(name) {
   p <- plot_cv_grid(cv_grids[[name]], title = paste0("Hyperparameter Tuning — ", name))
   print(p)
 })
@@ -207,10 +283,9 @@ purrr::walk(names(cv_grids), function(name) {
 # 7. Feature Importance (tree, rf, xgboost)
 
 Only models with a native/built-in importance metric are shown here —
-see `get_feature_importance()` in `R/importance.R`. `qda`/`knn` have no
-single importance score, and the coefficient-based models (logistic,
-logistic_complex, lda, glmnet) are already covered by `table_coef()` in
-`R/tables.R`.
+see `get_feature_importance()` in `R/importance.R`. `knn` has no single
+importance score, and the coefficient-based models (logistic, lda, glmnet)
+are already covered by `table_coef()` in `R/tables.R`.
 
 ```{r plot-feature-importance, fig.width=7, fig.height=5}
 importance_models <- c("tree", "rf", "xgboost")

@@ -98,6 +98,27 @@ table_chisq <- function(chi_res) {
     gt::tab_header(title = "Categorical predictors vs. Failing (Chi-square)")
 }
 
+# Render the interaction screen (output of screen_interactions()) as a gt
+# table, showing only the `top_n` most promising candidates and flagging any
+# that survive the BH correction.
+table_interaction_lrt <- function(screen, top_n = 15, alpha = 0.05) {
+  n_signif <- sum(screen$p_adj < alpha, na.rm = TRUE)
+  subtitle <- sprintf("%d of %d candidate terms significant at BH-adjusted p < %.2f",
+                      n_signif, nrow(screen), alpha)
+
+  screen %>%
+    utils::head(top_n) %>%
+    gt::gt() %>%
+    gt::fmt_number(lrt, decimals = 2) %>%
+    gt::fmt_number(c(p_value, p_adj), decimals = 4) %>%
+    gt::cols_label(term = "Interaction", added_df = "df", lrt = "LRT",
+                   p_value = "p", p_adj = "p (BH)") %>%
+    gt::tab_header(title    = "Two-way interaction screen (likelihood-ratio tests)",
+                   subtitle = subtitle) %>%
+    gt::data_color(columns = p_adj,
+                   fn = scales::col_bin(c("firebrick", "white"), bins = c(0, alpha, 1)))
+}
+
 # gt table of model coefficients with odds ratios and CIs,
 # highlighting p-values below 0.05.
 table_coef <- function(fit) {
@@ -129,6 +150,25 @@ table_fit_quality <- function(fit) {
     gt::gt() %>%
     gt::fmt_number(dplyr::everything(), decimals = 2) %>%
     gt::tab_header(title = "Model fit (McFadden pseudo-R\u00b2)")
+}
+
+# gt table of the tuning outcome (output of cv_best_summary()): the winning
+# hyperparameters per model, the size of the grid they were chosen from, and
+# the winner's mean CV AUC with its fold-to-fold SD. The row with the highest
+# mean CV AUC is bolded.
+table_cv_best <- function(cv_summary) {
+  best_row <- which.max(cv_summary$mean_auc)
+
+  cv_summary %>%
+    gt::gt() %>%
+    gt::fmt_number(c(mean_auc, sd_auc), decimals = 4) %>%
+    gt::cols_label(model = "Model", n_configs = "Configs searched",
+                   hyperparameters = "Selected hyperparameters",
+                   mean_auc = "Mean CV AUC", sd_auc = "SD across folds") %>%
+    gt::tab_header(title    = "Hyperparameter Tuning Summary",
+                   subtitle = "Stratified 5-fold CV on the training split") %>%
+    gt::tab_style(style     = gt::cell_text(weight = "bold"),
+                  locations = gt::cells_body(rows = best_row))
 }
 
 # gt table comparing models (output of compare_models()): Model,

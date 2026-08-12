@@ -1,4 +1,4 @@
-name: Deploy EDA, Modeling, and Interpretation to GitHub Pages
+name: Deploy EDA, Modeling, Interpretation, and Business Case to GitHub Pages
 
 on:
   push:
@@ -41,6 +41,7 @@ jobs:
           cp EDA.Rmd site_src/index.Rmd
           cp Modeling.Rmd site_src/Modeling.Rmd
           cp Interpretation.Rmd site_src/Interpretation.Rmd
+          cp BusinessCase.Rmd site_src/BusinessCase.Rmd
           cp -r R site_src/R
           cp StudentPerformanceFactors.csv site_src/StudentPerformanceFactors.csv
           cat > site_src/_site.yml << 'EOF'
@@ -55,9 +56,11 @@ jobs:
                 href: Modeling.html
               - text: "Interpretation"
                 href: Interpretation.html
+              - text: "Business Case"
+                href: BusinessCase.html
           EOF
 
-      - name: Render site (EDA, Modeling, and Interpretation tabs)
+      - name: Render site (EDA, Modeling, Interpretation, and Business Case tabs)
         working-directory: site_src
         run: rmarkdown::render_site()
         shell: Rscript {0}
