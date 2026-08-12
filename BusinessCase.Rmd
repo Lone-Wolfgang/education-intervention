@@ -41,8 +41,9 @@ running an intervention program on its predictions worth the money?**
 
 # 1. Cost Assumptions
 
-Everything downstream is driven by two numbers, and both are parameters — edit
-them here to re-run the entire business case under different assumptions.
+Everything downstream is driven by two numbers, and both are parameters.
+
+**Edit them here to re-run the entire business case under different assumptions.**
 
 ```{r cost-params}
 INTERVENTION_COST <- 1000   # spent on every student we flag (TP and FP alike)
@@ -57,14 +58,6 @@ a `r dollar(INTERVENTION_COST)` intervention, netting
 `r dollar(NO_ACTION_COST)`: the student fails and nothing was spent trying to
 stop it. A true negative is free.
 
-A miss is charged as a real `r dollar(-NO_ACTION_COST)` rather than treated as
-neutral. Against a strict do-nothing baseline it *is* a wash — that failure was
-going to cost `r dollar(NO_ACTION_COST)` regardless — but scoring it at zero
-makes the most damaging cell on the matrix look costless, which is exactly the
-error the program exists to avoid. The scorecard in section 4 still measures net
-benefit against the do-nothing baseline, so the payoff cells below are the
-per-decision economics, not an addend of that total.
-
 ```{r payoff-table}
 table_payoff(payoff_table(INTERVENTION_COST, NO_ACTION_COST),
              INTERVENTION_COST, NO_ACTION_COST)
@@ -74,11 +67,6 @@ table_payoff(payoff_table(INTERVENTION_COST, NO_ACTION_COST),
 plot_payoff_matrix(INTERVENTION_COST, NO_ACTION_COST)
 ```
 
-The asymmetry is the whole story: a miss costs
-`r round(NO_ACTION_COST / INTERVENTION_COST)`x what a wasted intervention does,
-so the program should be willing to flag several students who would have passed
-in order to catch one more who would not. A threshold tuned for statistical
-balance does not know that.
 
 # 2. Refit the Winning Model
 
