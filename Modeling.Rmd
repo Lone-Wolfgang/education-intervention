@@ -247,7 +247,8 @@ fold-to-fold SD as a reality check on the AUC.
 
 ```{r cv-summary}
 cv_summary <- cv_best_summary(cv_grids)
-table_cv_best(cv_summary)
+table_cv_best(cv_summary) %>%
+  save_table_png("modeling-cv-best")
 ```
 
 ## Tuning Curves (One-Dimensional Grids)
@@ -325,7 +326,8 @@ longer part of model selection).
 
 ```{r val-comparison}
 val_comparison <- compare_models(val_probs, actual_val)
-table_model_comparison(val_comparison)
+table_model_comparison(val_comparison) %>%
+  save_table_png("modeling-val-comparison")
 ```
 
 ## Decision-Threshold Tuning (Validation Set)
@@ -351,7 +353,7 @@ purrr::walk(names(val_probs), function(name) {
 })
 ```
 
-# 9. ROC Curves — All Models
+# 9. ROC Curves — Top 5 Models
 
 ```{r test-probs}
 test_probs <- purrr::imap(fitted_models, function(model, name) predict_fn(model, test_df))
@@ -364,8 +366,12 @@ test_probs$ensemble_pruned <- ensemble_probs(base_test_probs[pruned_names])
 actual_test <- as.integer(test_df$Status == "Fail")
 ```
 
+Restricted to the `pruned_names` top 5 by validation AUC (no ensembles), so the
+curves stay legible and comparable to the members that actually feed the
+pruned ensemble.
+
 ```{r roc-all, fig.height=7}
-plot_roc(test_probs, actual_test)
+plot_roc(test_probs[pruned_names], actual_test)
 ```
 
 # 10. Final Evaluation
@@ -374,7 +380,8 @@ plot_roc(test_probs, actual_test)
 
 ```{r test-comparison}
 test_comparison <- compare_models(test_probs, actual_test, thresholds = thresholds)
-table_model_comparison(test_comparison)
+table_model_comparison(test_comparison) %>%
+  save_table_png("modeling-test-comparison")
 ```
 
 ## Confusion Matrix — Best Model

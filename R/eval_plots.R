@@ -52,10 +52,17 @@ plot_roc <- function(probs_list, actual) {
     ggplot2::geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey60") +
     ggplot2::geom_line(linewidth = 1) +
     ggplot2::scale_color_manual(values = palette) +
+    ggplot2::guides(color = ggplot2::guide_legend(ncol = 1)) +
     ggplot2::coord_equal() +
     ggplot2::labs(title = "ROC Curve", x = "False Positive Rate", y = "True Positive Rate",
                   color = NULL) +
-    report_theme()
+    report_theme() +
+    ggplot2::theme(
+      legend.position  = "right",
+      legend.direction = "vertical",
+      legend.text      = ggplot2::element_text(size = 15),
+      legend.key.size  = grid::unit(1.3, "lines")
+    )
 }
 
 # For a single model, sweep the decision threshold from 0 to 1 and plot

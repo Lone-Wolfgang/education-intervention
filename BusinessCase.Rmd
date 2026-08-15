@@ -27,6 +27,7 @@ source("R/model.R")
 source("R/tune.R")
 source("R/eval.R")
 source("R/eval_plots.R")
+source("R/ensemble.R")
 source("R/business.R")
 source("R/tables.R")
 source("R/theme.R")
@@ -34,10 +35,16 @@ source("R/theme.R")
 ggplot2::theme_set(report_theme())
 ```
 
-`Modeling.Rmd` compared eight model families on the test split; the additive
-logistic regression came out on top (highest AUC and F1). This notebook takes
-that one model and answers the question the model comparison could not: **is
-running an intervention program on its predictions worth the money?**
+`Modeling.Rmd` compared eight model families (plus a full and a pruned
+mean-probability ensemble) on the validation split; the **pruned ensemble** —
+`glmnet`, `logistic`, `xgboost`, `lda`, and `rf`, the five highest-AUC models,
+mean-pooled after dropping the two weakest (`tree` and `knn`) — had the
+highest AUC and F1 there. AUC and F1 don't know about dollars, though, so this
+notebook re-fits those five base models plus the ensemble, tunes each one's
+*own* decision threshold against the cost assumptions below, and lets **net
+benefit** — not AUC — decide which model and threshold actually gets used to
+answer the question the model comparison could not: **is running an
+intervention program on its predictions worth the money?**
 
 # 1. Cost Assumptions
 
@@ -60,7 +67,8 @@ stop it. A true negative is free.
 
 ```{r payoff-table}
 table_payoff(payoff_table(INTERVENTION_COST, NO_ACTION_COST),
-             INTERVENTION_COST, NO_ACTION_COST)
+             INTERVENTION_COST, NO_ACTION_COST) %>%
+  save_table_png("business-payoff")
 ```
 
 ```{r payoff-matrix, fig.width=7, fig.height=6}
@@ -70,9 +78,9 @@ plot_payoff_matrix(INTERVENTION_COST, NO_ACTION_COST)
 
 # 2. Refit the Winning Model
 
-Same data preparation, same split, same seed as `Modeling.Rmd`: the model is
-fit on **train** only, the threshold is chosen on **validation** only, and
-**test** is touched once, at the end.
+Same data preparation, same split, same seed as `Modeling.Rmd`: every member
+model is fit on **train** only, the threshold is chosen on **validation**
+only, and **test** is touched once, at the end.
 
 ```{r fit}
 CUTOFF <- 63
@@ -96,17 +104,61 @@ train_df <- apply_preprocessor(prep_params, splits$train)
 val_df   <- apply_preprocessor(prep_params, splits$val)
 test_df  <- apply_preprocessor(prep_params, splits$test)
 
-fit <- fit_logistic(train_df, num_vars, cat_vars)
-
-val_probs  <- predict_probs(fit, val_df,  num_vars, cat_vars)
-test_probs <- predict_probs(fit, test_df, num_vars, cat_vars)
 actual_val  <- as.integer(val_df$Status  == "Fail")
 actual_test <- as.integer(test_df$Status == "Fail")
 ```
 
-# 3. Choose the Decision Rule on Validation
+The ensemble pools five base learners, each refit here with the hyperparameters
+`Modeling.Rmd`'s CV grid search already settled on (`logistic` and `lda` have
+none to tune):
 
-Four candidate rules, all evaluated on the validation set:
+| Model | Tuned hyperparameters |
+|---|---|
+| `glmnet` | `alpha` = 0.1 (`lambda` chosen internally by `cv.glmnet`) |
+| `rf` | `mtry` = 2, `ntree` = 600, `nodesize` = 1 |
+| `xgboost` | `nrounds` = 300, `max_depth` = 2, `eta` = 0.1, `subsample` = 0.7, `min_child_weight` = 1 |
+
+```{r fit-ensemble}
+fit_logistic_m <- fit_logistic(train_df, num_vars, cat_vars)
+fit_lda_m      <- fit_lda(train_df, num_vars, cat_vars)
+fit_glmnet_m   <- fit_glmnet(train_df, num_vars, cat_vars, alpha = 0.1)
+fit_rf_m       <- fit_rf(train_df, num_vars, cat_vars,
+                         mtry = 2, ntree = 600, nodesize = 1)
+fit_xgboost_m  <- fit_xgboost(train_df, num_vars, cat_vars,
+                              nrounds = 300, max_depth = 2, eta = 0.1,
+                              subsample = 0.7, min_child_weight = 1)
+
+base_val_probs <- list(
+  logistic = predict_probs(fit_logistic_m, val_df, num_vars, cat_vars),
+  lda      = predict_probs(fit_lda_m,      val_df, num_vars, cat_vars),
+  glmnet   = predict_probs(fit_glmnet_m,   val_df, num_vars, cat_vars),
+  rf       = predict_probs(fit_rf_m,       val_df, num_vars, cat_vars),
+  xgboost  = predict_probs(fit_xgboost_m,  val_df, num_vars, cat_vars)
+)
+base_test_probs <- list(
+  logistic = predict_probs(fit_logistic_m, test_df, num_vars, cat_vars),
+  lda      = predict_probs(fit_lda_m,      test_df, num_vars, cat_vars),
+  glmnet   = predict_probs(fit_glmnet_m,   test_df, num_vars, cat_vars),
+  rf       = predict_probs(fit_rf_m,       test_df, num_vars, cat_vars),
+  xgboost  = predict_probs(fit_xgboost_m,  test_df, num_vars, cat_vars)
+)
+
+pruned_names <- prune_by_auc(base_val_probs, actual_val, top_n = 5)
+pruned_names
+
+ensemble_val_probs  <- ensemble_probs(base_val_probs[pruned_names])
+ensemble_test_probs <- ensemble_probs(base_test_probs[pruned_names])
+
+all_val_probs  <- c(base_val_probs,  list(ensemble = ensemble_val_probs))
+all_test_probs <- c(base_test_probs, list(ensemble = ensemble_test_probs))
+```
+
+# 3. Choose the Model and Decision Rule on Validation
+
+`Modeling.Rmd` picked a winner by AUC/F1 alone, using a single shared
+threshold-tuning metric across models. Here every one of the six candidates
+(the five base learners plus the ensemble) gets its *own* shot at four
+candidate decision rules, each producing one threshold on the validation set:
 
 | Rule | Threshold from | Optimizes |
 |---|---|---|
@@ -116,38 +168,44 @@ Four candidate rules, all evaluated on the validation set:
 | `cost_ratio` | `r dollar(INTERVENTION_COST)` / `r dollar(NO_ACTION_COST)` = `r round(INTERVENTION_COST / NO_ACTION_COST, 3)` | expected cost, from the assumptions alone — flag a student whenever `p x NO_ACTION_COST > INTERVENTION_COST` |
 
 The first three are statistical rules that ignore the cost asymmetry; the
-fourth is derived from it. Whichever produces the highest **validation** net
+fourth is derived from it. For each model, only its best-net-benefit rule is
+kept; the models are then ranked against each other at that best rule.
+Whichever **model + rule** combination produces the highest **validation** net
 benefit is the one carried to test.
 
 ```{r rules}
-rules <- threshold_rules(val_probs, actual_val, INTERVENTION_COST, NO_ACTION_COST)
-table_threshold_rules(rules)
+model_rules <- best_rule_per_model(all_val_probs, actual_val,
+                                   INTERVENTION_COST, NO_ACTION_COST)
+table_model_rule_comparison(model_rules) %>%
+  save_table_png("business-model-rule-comparison")
+```
+
+```{r best-pick}
+best_model     <- model_rules$model[1]
+best_rule      <- model_rules$rule[1]
+best_threshold <- model_rules$threshold[1]
+c(model = best_model, rule = best_rule, threshold = best_threshold)
 ```
 
 ```{r rules-curve, fig.width=8, fig.height=5}
-plot_net_benefit_curve(val_probs, actual_val, rules,
+best_model_rules <- threshold_rules(all_val_probs[[best_model]], actual_val,
+                                    INTERVENTION_COST, NO_ACTION_COST)
+plot_net_benefit_curve(all_val_probs[[best_model]], actual_val, best_model_rules,
                        INTERVENTION_COST, NO_ACTION_COST)
 ```
 
-```{r rule-pick}
-best_rule <- rules$rule[which.max(rules$net_benefit)]
-best_threshold <- rules$threshold[which.max(rules$net_benefit)]
-c(rule = best_rule, threshold = best_threshold)
-```
-
 ```{r rule-pick-note, echo=FALSE, results='asis'}
-tied <- rules$rule[rules$net_benefit == max(rules$net_benefit)]
+tied <- model_rules$model[model_rules$net_benefit == max(model_rules$net_benefit)]
 tie_note <- if (length(tied) > 1) {
-  sprintf(" (%s land on the same threshold and tie exactly; `%s` is taken as the first)",
-          paste(sprintf("`%s`", tied), collapse = " and "), best_rule)
+  sprintf(" (%s tie exactly; `%s` is taken as the first)",
+          paste(sprintf("`%s`", tied), collapse = " and "), best_model)
 } else ""
 
 cat(sprintf(
-"The **%s** rule wins on validation with a threshold of **%.3f**%s, worth %s against the %s the do-nothing baseline would cost — %s more than the default 0.5 cut.\n",
-best_rule, best_threshold, tie_note,
-dollar(max(rules$net_benefit)),
-dollar(rules$cost_no_action[1]),
-dollar(max(rules$net_benefit) - rules$net_benefit[rules$rule == "argmax"])))
+"The **%s** model wins on validation with its **%s** rule at a threshold of **%.3f**%s, worth %s against the %s the do-nothing baseline would cost.\n",
+best_model, best_rule, best_threshold, tie_note,
+dollar(max(model_rules$net_benefit)),
+dollar(model_rules$cost_no_action[1])))
 ```
 
 # 4. Apply to Test
@@ -156,6 +214,7 @@ The model and the threshold are both now fixed. This is the only time the test
 set is scored.
 
 ```{r test-eval}
+test_probs <- all_test_probs[[best_model]]
 nb_test <- net_benefit(test_probs, actual_test, best_threshold,
                        INTERVENTION_COST, NO_ACTION_COST)
 nb_test
@@ -163,11 +222,13 @@ nb_test
 
 ```{r test-cm, fig.width=7, fig.height=6}
 plot_cost_confusion_matrix(nb_test, INTERVENTION_COST, NO_ACTION_COST,
-                           title = sprintf("Test Set in Dollars — %s rule", best_rule))
+                           title = sprintf("Test Set in Dollars — %s, %s rule",
+                                          best_model, best_rule))
 ```
 
 ```{r test-scorecard}
-table_business_case(nb_test, label = "Test set")
+table_business_case(nb_test, label = "Test set") %>%
+  save_table_png("business-scorecard")
 ```
 
 ```{r test-waterfall, fig.width=8, fig.height=5}
@@ -197,9 +258,11 @@ Two caveats worth stating plainly:
   `r dollar(0.6 * NO_ACTION_COST - INTERVENTION_COST)` and the case weakens
   proportionally. Both costs are parameters at the top of this notebook, so
   that scenario is a one-line edit.
-- **The model is close to separation** (see `EDA.Rmd`, section 12a), so its
-  predicted probabilities are pushed toward 0 and 1 and are more confident than
-  they should be. That mostly affects rules that read the probability scale
-  literally, such as `cost_ratio`; the net-benefit curve above is flat enough
-  across the middle of the range that the exact threshold matters less than the
-  decision to run the program at all.
+- **The data are close to separation** (see `EDA.Rmd`, section 12a), which
+  pushes the linear models (`logistic`, `glmnet`, `lda`) toward overconfident
+  probabilities near 0 and 1; if the ensemble is the winner, averaging them
+  with `rf` and `xgboost` tempers this somewhat, but not entirely. That mostly
+  affects rules that read the probability scale literally, such as
+  `cost_ratio`; the net-benefit curve above is flat enough across the middle
+  of the range that the exact threshold matters less than the decision to run
+  the program at all.

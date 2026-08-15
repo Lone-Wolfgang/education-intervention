@@ -104,7 +104,8 @@ monotonically; the rest become plain factors.
 
 ```{r target}
 df <- add_target_and_factors(df, cutoff = CUTOFF)
-table_class_balance(df, cutoff = CUTOFF)
+table_class_balance(df, cutoff = CUTOFF) %>%
+  save_table_png("eda-class-balance")
 ```
 
 ```{r target-plot}
@@ -145,14 +146,16 @@ plot_num_by_status(df, num_vars_all)
 
 ```{r ttests}
 smd <- ttest_summary(df, num_vars_all)
-table_ttest(smd)
+table_ttest(smd) %>%
+  save_table_png("eda-ttest")
 ```
 
 ## 7b. Categorical predictors vs. Status
 
 ```{r cat-assoc}
 fail_rates <- fail_rate_summary(df, cat_vars_all)
-table_fail_rates(fail_rates)
+table_fail_rates(fail_rates) %>%
+  save_table_png("eda-fail-rates")
 ```
 
 ```{r cat-plot, fig.height=9}
@@ -165,7 +168,8 @@ plot_status_by_cat_stacked(df, cat_vars_all)
 
 ```{r chisq}
 chi_res <- chisq_summary(df, cat_vars_all)
-table_chisq(chi_res)
+table_chisq(chi_res) %>%
+  save_table_png("eda-chisq")
 ```
 
 ## 7c. Interaction Screening
@@ -244,7 +248,8 @@ summary(fit)
 ## 10a. Coefficients Table
 
 ```{r coef-table}
-table_coef(fit)
+table_coef(fit) %>%
+  save_table_png("eda-coef")
 ```
 
 ## 10b. Log-Odds Forest Plot
@@ -254,7 +259,8 @@ plot_logodds(fit)
 ```
 
 ```{r fit-quality}
-table_fit_quality(fit)
+table_fit_quality(fit) %>%
+  save_table_png("eda-fit-quality")
 ```
 
 # 11. Interaction Screening
@@ -269,7 +275,8 @@ Benjamini-Hochberg adjusted.
 
 ```{r interaction-screen}
 int_screen <- screen_interactions(df, num_vars, cat_vars)
-table_interaction_lrt(int_screen)
+table_interaction_lrt(int_screen) %>%
+  save_table_png("eda-interaction-lrt")
 ```
 
 ```{r interaction-screen-summary, echo=FALSE, results='asis'}
@@ -316,7 +323,8 @@ here.
 the usual "> 5" rule applies.
 
 ```{r vif}
-table_vif(vif_summary(fit))
+table_vif(vif_summary(fit)) %>%
+  save_table_png("eda-vif")
 ```
 
 `Hours_Studied` and `Attendance` come back above 20, which would normally be
@@ -334,7 +342,8 @@ plot_influence(fit)
 ```
 
 ```{r influence-table}
-table_influence(influence_summary(fit), n_obs = nrow(df))
+table_influence(influence_summary(fit), n_obs = nrow(df)) %>%
+  save_table_png("eda-influence")
 ```
 
 **Separation.** Failing is the minority class and the fitted coefficients are
@@ -344,7 +353,8 @@ trustworthy. This is the single most important caveat on the coefficients
 above.
 
 ```{r separation}
-table_separation(separation_summary(fit))
+table_separation(separation_summary(fit)) %>%
+  save_table_png("eda-separation")
 ```
 
 ## 12b. LDA / QDA
@@ -366,7 +376,8 @@ plot_within_class_qq(df, num_vars)
 ```
 
 ```{r lda-shapiro}
-table_normality(normality_summary(df, num_vars))
+table_normality(normality_summary(df, num_vars)) %>%
+  save_table_png("eda-normality")
 ```
 
 **Equal covariance (LDA-specific).** Levene's test per predictor, then Box's M
@@ -374,11 +385,13 @@ on the full covariance matrices, then a look at *where* the two structures
 differ.
 
 ```{r lda-levene}
-table_levene(levene_summary(df, num_vars))
+table_levene(levene_summary(df, num_vars)) %>%
+  save_table_png("eda-levene")
 ```
 
 ```{r lda-boxm}
-table_boxm(boxm_test(df, num_vars))
+table_boxm(boxm_test(df, num_vars)) %>%
+  save_table_png("eda-boxm")
 ```
 
 ```{r lda-cor, fig.width=10, fig.height=5}

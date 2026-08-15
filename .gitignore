@@ -7,6 +7,7 @@
 _site/
 EDA.html
 figure/*
+tables/*
 Modeling_dev.html
 Modeling_dev.Rmd
 *.html

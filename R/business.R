@@ -161,6 +161,22 @@ threshold_rules <- function(probs, actual,
     dplyr::arrange(dplyr::desc(net_benefit))
 }
 
+# Tune all four decision rules (threshold_rules()) separately for every model
+# in `probs_list`, keep only each model's best-net-benefit rule, and stack the
+# results into one row per model, sorted by net benefit. Unlike
+# threshold_rules() (one model, every rule), this compares models against each
+# other at each one's own optimal operating point rather than forcing them
+# onto a shared threshold.
+best_rule_per_model <- function(probs_list, actual,
+                                intervention_cost = INTERVENTION_COST,
+                                no_action_cost = NO_ACTION_COST) {
+  purrr::imap_dfr(probs_list, function(probs, model) {
+    rules <- threshold_rules(probs, actual, intervention_cost, no_action_cost)
+    dplyr::mutate(rules[1, , drop = FALSE], model = model, .before = 1)
+  }) %>%
+    dplyr::arrange(dplyr::desc(net_benefit))
+}
+
 # Render the decision-rule comparison as a gt table, bolding the winner.
 table_threshold_rules <- function(rules) {
   best_row <- which.max(rules$net_benefit)

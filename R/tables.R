@@ -1,3 +1,16 @@
+# Directory every gt table PNG export lands in (created on first use).
+TABLE_PNG_DIR <- "tables"
+
+# Render a gt table to a PNG in `dir` (default `TABLE_PNG_DIR`) via
+# gt::gtsave()/webshot2, and return `gt_obj` unchanged so this can sit at the
+# end of a pipe (`table_foo(...) %>% save_table_png("foo")`) without
+# disturbing the chunk's normal auto-printed output.
+save_table_png <- function(gt_obj, name, dir = TABLE_PNG_DIR) {
+  if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+  gt::gtsave(gt_obj, filename = file.path(dir, paste0(name, ".png")))
+  gt_obj
+}
+
 # gt table of Pass/Fail counts and shares. `cutoff` is optional and only
 # used to label the title with the threshold that produced this balance.
 table_class_balance <- function(df, cutoff = NULL) {
@@ -191,4 +204,27 @@ table_model_comparison <- function(comparison) {
     gt::tab_header(title = "Model Comparison") %>%
     gt::tab_style(style     = gt::cell_text(weight = "bold"),
                    locations = gt::cells_body(rows = best_row))
+}
+
+# gt table comparing models at each one's own best decision rule (output of
+# best_rule_per_model()): Model, Decision Rule, Threshold, TP, FP, FN,
+# Flagged, Investment, Loss, Net Benefit — the row with the highest net
+# benefit is bolded.
+table_model_rule_comparison <- function(comparison) {
+  best_row <- which.max(comparison$net_benefit)
+
+  comparison %>%
+    dplyr::select(model, rule, threshold, tp, fp, fn, n_flagged,
+                  investment, loss, net_benefit) %>%
+    gt::gt() %>%
+    gt::fmt_number(threshold, decimals = 3) %>%
+    gt::fmt_currency(c(investment, loss, net_benefit), decimals = 0) %>%
+    gt::cols_label(model = "Model", rule = "Decision Rule",
+                   threshold = "Threshold", tp = "TP", fp = "FP", fn = "FN",
+                   n_flagged = "Flagged", investment = "Investment",
+                   loss = "Loss", net_benefit = "Net Benefit") %>%
+    gt::tab_header(title = "Models Compared at Their Optimal Decision Rule",
+                   subtitle = "Each model's best rule on validation, ranked by net benefit") %>%
+    gt::tab_style(style = gt::cell_text(weight = "bold"),
+                  locations = gt::cells_body(rows = best_row))
 }
