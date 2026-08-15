@@ -29,10 +29,12 @@ raw <- load_("StudentPerformanceFactors.csv")
 miss <- count_missing_values(raw)
 df <- impute_categoricals(raw, miss$variable)
 df <- add_target_and_factors(df, cutoff = CUTOFF)
+use_linear_contrasts()
 
-num_vars <- c("Hours_Studied", "Attendance", "Sleep_Hours", "Previous_Scores",
-              "Tutoring_Sessions", "Physical_Activity")
-cat_vars <- df %>% select(where(is.factor), -Status) %>% names()
+num_vars <- select_num_vars(c("Hours_Studied", "Attendance", "Sleep_Hours",
+                               "Previous_Scores", "Tutoring_Sessions",
+                               "Physical_Activity"))
+cat_vars <- select_cat_vars(df)
 ```
 
 # 2. Train / Validation / Test Split
@@ -46,35 +48,36 @@ $$
 \log\left(\frac{P(\text{Fail})}{1-P(\text{Fail})}\right) = \beta_0 
 + \beta_1(\text{Hours\_Studied}) 
 + \beta_2(\text{Attendance}) 
-+ \beta_3(\text{Sleep\_Hours}) 
-+ \beta_4(\text{Previous\_Scores}) 
-+ \beta_5(\text{Tutoring\_Sessions}) 
-+ \beta_6(\text{Physical\_Activity}) 
-+ \beta_7(\text{Parental\_Involvement}) 
-+ \beta_8(\text{Access\_to\_Resources}) 
-+ \beta_9(\text{Extracurricular\_Activities}) 
-+ \beta_{10}(\text{Motivation\_Level}) 
-+ \beta_{11}(\text{Internet\_Access}) 
-+ \beta_{12}(\text{Family\_Income}) 
-+ \beta_{13}(\text{Teacher\_Quality}) 
-+ \beta_{14}(\text{School\_Type}) 
-+ \beta_{15}(\text{Peer\_Influence}) 
-+ \beta_{16}(\text{Learning\_Disabilities}) 
-+ \beta_{17}(\text{Parental\_Education\_Level}) 
-+ \beta_{18}(\text{Distance\_from\_Home}) 
-+ \beta_{19}(\text{Gender})
++ \beta_3(\text{Previous\_Scores}) 
++ \beta_4(\text{Tutoring\_Sessions}) 
++ \beta_5(\text{Physical\_Activity}) 
++ \beta_6(\text{Parental\_Involvement}) 
++ \beta_7(\text{Access\_to\_Resources}) 
++ \beta_8(\text{Extracurricular\_Activities}) 
++ \beta_9(\text{Motivation\_Level}) 
++ \beta_{10}(\text{Internet\_Access}) 
++ \beta_{11}(\text{Family\_Income}) 
++ \beta_{12}(\text{Teacher\_Quality}) 
++ \beta_{13}(\text{Peer\_Influence}) 
++ \beta_{14}(\text{Learning\_Disabilities}) 
++ \beta_{15}(\text{Parental\_Education\_Level}) 
++ \beta_{16}(\text{Distance\_from\_Home})
 $$
 \
-For the ordinal predictors (Parental_Involvement, Access_to_Resources,
-Motivation_Level, Family_Income, Teacher_Quality, Peer_Influence,
-Parental_Education_Level, Distance_from_Home), each contributes two
-terms via polynomial contrasts — a linear (`.L`) and quadratic (`.Q`)
-component — rather than a single coefficient. The remaining categorical
-predictors contribute one coefficient per non-reference level (standard
-dummy coding).\
-\
+Following feature selection, `Sleep_Hours`, `School_Type`, and `Gender`
+were dropped from the additive model, and all ordinal predictors (Parental_Involvement, Access_to_Resources, Motivation_Level, Family_Income, Teacher_Quality, Peer_Influence, Parental_Education_Level, Distance_from_Home) now enter via a single linear (`.L`) contrast rather than separate linear and
+quadratic terms, since the quadratic components were uniformly
+non-significant. The remaining categorical predictors
+(Extracurricular_Activities, Internet_Access, Learning_Disabilities)
+are binary and contribute one dummy-coded coefficient each.\
 
 # 3. Additive Logistic Model (Objective 1)
+
+**Note:** this model is fit on the training split specifically (rather than 
+the full dataset used in EDA.Rmd's exploratory fit), so the coefficients 
+interpreted here describe the same model whose performance is reported 
+in Modeling.Rmd's comparison table.
+
 ```{r}
 fit <- fit_logistic(splits$train, num_vars, cat_vars)
 summary(fit)
@@ -163,28 +166,47 @@ newdata_extra2 %>% dplyr::select(Extracurricular_Activities, predicted_prob_fail
 
 # 8. Interpretation (Coefficient / Odds Ratio / Confidence Intervals)
 
-**Hours_Studied:**\
+**Hours_Studied:** Holding all other predictors constant, each additional hour studied is associated with a decrease in the log-odds of failing by 1.77 (SE = 0.18, p < 0.001). Converting the log odds to an odds ratio, each additional hour studied is associated with roughly an 83% reduction in the odds of failing (OR = 0.17, 95% CI: 0.12–0.24).\
 \
-Holding all other predictors constant, each additional hour studied is associated with a decrease in the log-odds of failing by 1.82, a highly statistically significant effect (p < 0.001). Converting to an odds ratio, this corresponds to the odds of failing multiplying by a factor of 0.16 (95% CI: 0.11–0.24) for each additional hour studied. In other words, as study time increases, it results in a large, statistically significant reduction in the odds of failing.\
-\
-**Extracurricular_Activities:**\
-\
-Holding all other predictors constant, students who participate in extracurricular activities have an odds of failing approximately 0.10 times (95% CI: 0.04–0.24) those of students who do not participate. This is equivalent to a decrease in the log-odds of failing by a factor of 2.29, and it is a highly statistically significant effect (p < 0.001).\
+**Extracurricular_Activities:** Holding all other predictors constant, students who participate in extracurricular activities have odds of failing about 89% lower than those who don't (OR = 0.11, 95% CI: 0.05–0.26). This is equivalent to a decrease in the log-odds of failing by 2.17 (SE = 0.42, p < 0.001).\
 
 
 # 9. Practical vs Statistical Significance
 
-**Hours_Studied:**\
+**Hours_Studied:** While the statistical significance of this effect is clear, its practical magnitude raises a cause for concern. The effects plot shows an unusually sharp transition in predicted failure probability and near-certain failure below roughly 5 hours studied, collapsing to near-certain passing at above roughly 10 hours studied, with the entire shift occurring in a narrow window. Notably, this steepness persisted even after removing weak predictors and simplifying the model's contrasts (which improved AIC from 270.6 to 262.6). This suggests that the sharpness reflects a genuine pattern of separation near the Fail threshold in this data, rather than an artifact of unnecessary model complexity.\ 
+A relationship this deterministic is unlikely to translate in the real world. It more likely reflects some residual separation in the model, a byproduct of how rare Fail cases are in this dataset even after adjusting our threshold. We consider the direction of this effect (more hours studied associated with lower risk of failing) to be reliable and well-supported, but we recommend treating the exact magnitude of the effect with caution rather than as a generalizable estimate.\
 \
-While the statistical significance of this effect is clear, its practical magnitude raises a cause for concern. The effects plot shows an unusually sharp transition in predicted failure probability — near-certain failure below roughly 5 hours studied, collapsing to near-certain passing at above roughly 10 hours studied, with the entire shift occurring in a narrow window.\ 
-A relationship this deterministic is unlikely to translate in the real world. It more likely reflects some residual separation in the model, a byproduct of how rare Fail cases are in this dataset even after adjusting our threshold. We consider the direction of this effect (more hours studied associated with lower risk of failing) to be reliable and well-supported, but recommend treating the exact magnitude of the effect with caution rather than as a precise, generalizable estimate.\
-\
-**Extracurricular_Activities:**\
-\
-To assess practical significance of Extracurricular_Activities, we evaluated predicted failure probability for a student in a borderline study-time range (6 hours studied — near the model's steepest risk transition), since at typical study levels the predicted risk of failing is already near zero for all students regardless of extracurricular participation.\ 
-At this borderline point, predicted probability of failing drops from 84.3% (95% CI: 53.3%–96.2%) for non-participants to 35.1% (95% CI: 11.6%–69.0%) for participants — a roughly 49-percentage-point reduction. This is a substantial, practically meaningful effect, particularly for students already at elevated risk based on study time. The relatively wide confidence intervals reflect genuine uncertainty in this estimate, since few observations fall within this narrow, high-risk band of the data. This would be a limitation worth acknowledging rather than obscuring.\
+**Extracurricular_Activities:** To assess practical significance of Extracurricular_Activities, we evaluated predicted failure probability for a student in a borderline study-time range (6 hours studied — near the model's steepest risk transition), since at typical study levels the predicted risk of failing is already near zero for all students regardless of extracurricular participation.\ 
+At this borderline study-time range, predicted probability of failing drops from 79.6% (95% CI: 54.8%–92.6%) for non-participants of extracurricular activities to 30.7% (95% CI: 12.9%–56.9%) for participants — roughly a 49-percentage-point reduction. This is a substantial and practically meaningful effect, particularly for students already at elevated risk based on study time. The relatively wide confidence intervals reflect genuine uncertainty in this estimate, so this would be a limitation worth acknowledging rather than obscuring.\
 
-# 10. LDA / QDA Assumptions
+# 10. Broader Predictor Importance
+
+A note on method first: since our coefficients mix unstandardized continuous 
+variables (Hours_Studied) with binary/ordinal dummy variables, raw coefficient 
+size isn't directly comparable across predictors. The best available comparison 
+from a standard glm() output is the z-value (coefficient ÷ SE), which reflects 
+how confidently each effect is estimated relative to its own uncertainty — a 
+reasonable proxy for relative importance here.\
+
+```{r}
+results_full <- data.frame(
+  term = rownames(coefs),
+  z = abs(coefs[, "z value"])
+) %>% arrange(desc(z))
+
+results_full
+```
+
+Across the 16 retained predictors, Attendance (z = 9.86) and Hours_Studied (z = 9.79) stand out as the two strongest signals in the model. This is consistent with our univariate EDA, where these same two variables showed the largest mean differences between Pass and Fail students (Attendance: −14.4 points, p < 0.0001; Hours_Studied: −6.7 hours, p < 0.0001). `Previous_Scores`, `Access_to_Resources`, and `Tutoring_Sessions` round out the top five, which also coincide with their strong standalone associations with failing identified in the EDA stage.\
+\
+Among the categorical predictors, `Access_to_Resources` and `Parental_Involvement` carry the most weight — again matching the two strongest chi-square associations found in EDA (χ² = 49.2 and 77.1, respectively). This consistency between our univariate screening and the final multivariate model gives us more confidence that these aren't spurious or interaction-driven effects, but genuinely robust predictors of failure risk.\
+\
+Nearly all coefficients point in the protective direction (higher levels associated with lower failure risk). However, there are two notable exceptions worth flagging:\
+\
+`Learning_Disabilities` (positive coefficient — presence of a learning disability is associated with higher failure risk) and `Distance_from_Home` (positive .L — farther distance from home is associated with higher risk, potentially tied to reduced attendance or engagement). Both align with intuitive, real-world expectations rather than contradicting them.\
+`Extracurricular_Activities` — one of the two worked examples above — has the smallest |z| of the entire 16 (z = 5.16), and it is the weakest signal in the model. It remains statistically significant and, as our effects plot showed, still practically meaningful in the higher-risk range of `Hours_Studied`. However, it's worth noting that it ranks last among the retained predictors, not first, despite its featured role in Section 8.\
+
+# 11. LDA / QDA Assumptions
 ```{r}
 # Visual Check (Distributions of Numeric Variables)
 splits$train %>%
